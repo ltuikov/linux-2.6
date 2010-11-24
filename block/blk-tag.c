@@ -130,6 +130,7 @@ init_tag_map(struct request_queue *q, struct blk_queue_tag *tags, int depth)
 	tags->max_depth = depth;
 	tags->tag_index = tag_index;
 	tags->tag_map = tag_map;
+	tags->last_tag = 0;
 
 	return 0;
 fail:
@@ -222,7 +223,7 @@ int blk_queue_resize_tags(struct request_queue *q, int new_depth)
 	struct blk_queue_tag *bqt = q->queue_tags;
 	struct request **tag_index;
 	unsigned long *tag_map;
-	int max_depth, nr_ulongs;
+	int max_depth, nr_ulongs, last_tag;
 
 	if (!bqt)
 		return -ENXIO;
@@ -251,6 +252,7 @@ int blk_queue_resize_tags(struct request_queue *q, int new_depth)
 	tag_index = bqt->tag_index;
 	tag_map = bqt->tag_map;
 	max_depth = bqt->real_max_depth;
+	last_tag = bqt->last_tag;
 
 	if (init_tag_map(q, bqt, new_depth))
 		return -ENOMEM;
@@ -258,6 +260,7 @@ int blk_queue_resize_tags(struct request_queue *q, int new_depth)
 	memcpy(bqt->tag_index, tag_index, max_depth * sizeof(struct request *));
 	nr_ulongs = ALIGN(max_depth, BITS_PER_LONG) / BITS_PER_LONG;
 	memcpy(bqt->tag_map, tag_map, nr_ulongs * sizeof(unsigned long));
+	bqt->last_tag = last_tag;
 
 	kfree(tag_index);
 	kfree(tag_map);
@@ -364,12 +367,20 @@ int blk_queue_start_tag(struct request_queue *q, struct request *rq)
 			return 1;
 	}
 
+	if (bqt->last_tag == bqt->max_depth-1)
+		bqt->last_tag = 0;
+
 	do {
-		tag = find_first_zero_bit(bqt->tag_map, max_depth);
+		tag = find_next_zero_bit(bqt->tag_map,
+					 max_depth,
+					 bqt->last_tag+1);
 		if (tag >= max_depth)
 			return 1;
 
 	} while (test_and_set_bit_lock(tag, bqt->tag_map));
+
+	bqt->last_tag = tag;
+
 	/*
 	 * We need lock ordering semantics given by test_and_set_bit_lock.
 	 * See blk_queue_end_tag for details.

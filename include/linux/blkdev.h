@@ -224,6 +224,7 @@ struct blk_queue_tag {
 	int max_depth;			/* what we will send to device */
 	int real_max_depth;		/* what the array can hold */
 	atomic_t refcnt;		/* map can be shared */
+	int last_tag;
 };
 
 #define BLK_SCSI_MAX_CMDS	(256)

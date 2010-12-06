@@ -8,8 +8,20 @@
 ccflags-y := -Idrivers/scsi
 
 obj-$(CONFIG_USB_UAS)		+= uas.o
+obj-$(CONFIG_USB_UASP)		+= uasp.o
 obj-$(CONFIG_USB_STORAGE)	+= usb-storage.o
 
+<<<<<<< HEAD
+=======
+ifeq ($(CONFIG_USB_UAS_DEBUG),y)
+	EXTRA_CFLAGS += -DUAS_DEBUG
+endif
+
+ifeq ($(CONFIG_USB_UASP_DEBUG),y)
+	EXTRA_CFLAGS += -DUASP_DEBUG
+endif
+
+>>>>>>> 8948be8... [USB] UASP: USB Attached SCSI (UAS) protocol driver
 usb-storage-y := scsiglue.o protocol.o transport.o usb.o
 usb-storage-y += initializers.o sierra_ms.o option_ms.o
 

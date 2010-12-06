@@ -185,6 +185,38 @@ config USB_UAS
 
 	  If you compile this driver as a module, it will be named uas.
 
+<<<<<<< HEAD
+=======
+config USB_UAS_DEBUG
+       bool "Compile in debug mode"
+       default n
+       depends on USB_UAS
+       help
+	 Compiles the uas driver in debug mode. In debug mode,
+	 the driver prints debug messages to the console.
+
+	 If unsure, say 'N'.
+
+config USB_UASP
+       tristate "USB Attached SCSI (UAS) protocol driver (uasp)"
+       depends on USB && SCSI
+       help
+	USB Attached SCSI (UAS) protocol driver. This driver allows you
+	to connect to UAS devices and use them as SCSI devices.
+
+	If unusure say 'Y' or 'M'.
+
+	If compiled as a module, this driver will be named uasp.
+
+config USB_UASP_DEBUG
+       bool "Compile the uasp driver in debug mode"
+       depends on USB_UASP
+       help
+	Compiles the uasp driver in debug mode.
+
+	If unsure say 'N'.
+
+>>>>>>> 8948be8... [USB] UASP: USB Attached SCSI (UAS) protocol driver
 config USB_LIBUSUAL
 	bool "The shared table of common (or usual) storage devices"
 	depends on USB

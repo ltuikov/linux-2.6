@@ -30,6 +30,19 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
 
+int MaxNumStreams = -1;
+
+module_param(MaxNumStreams, int, 0444);
+MODULE_PARM_DESC(MaxNumStreams, "\n"
+	"\tSome host controllers and/or devices report a larger number of\n"
+	"\tstreams that they in fact support. This parameter allows you\n"
+	"\tto limit the number of streams this driver will request the XHCI\n"
+	"\tHCD to allocate. If set to -1, the default value, then this driver\n"
+	"\twill use the value reported by the attached device. Else the\n"
+	"\tnumber of streams will be limited to the minimum reported by the\n"
+	"\tattached device and this value. Valid values are -1, default,\n"
+	"\tand 1 to 0xFFEF.");
+
 /* Information unit types
  */
 #define IU_CMD   1
@@ -938,6 +951,8 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 					 tpinfo->eps[3]->desc.bEndpointAddress);
 
 	if (udev->speed == USB_SPEED_SUPER) {
+		int max_streams;
+
 		for (i = 1; i < 4; i++) {
 			if (tpinfo->max_streams == 0)
 				tpinfo->max_streams = USB_SS_MAX_STREAMS(tpinfo->eps[i]->ss_ep_comp.bmAttributes);
@@ -952,9 +967,13 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 		}
 		
 		tpinfo->use_streams = 1;
+		if (1 <= MaxNumStreams && MaxNumStreams <= 0xFFEF)
+			max_streams = min(MaxNumStreams, tpinfo->max_streams);
+		else
+			max_streams = tpinfo->max_streams;
 		tpinfo->num_streams = usb_alloc_streams(iface,
 							&tpinfo->eps[1], 3,
-							tpinfo->max_streams,
+							max_streams,
 							GFP_KERNEL);
 		if (tpinfo->num_streams <= 0) {
 			dev_err(&udev->dev,

@@ -1059,8 +1059,8 @@ static int uasp_probe(struct usb_interface *iface,
 		goto Free;
 
 	shost->hostdata[0] = (unsigned long)tpinfo;
-	scsi_scan_host(shost);
 	usb_set_intfdata(iface, shost);
+	scsi_scan_host(shost);
 
 	return res;
  Free:

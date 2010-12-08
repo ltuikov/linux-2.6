@@ -943,7 +943,7 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 	    tpinfo->eps[2] == NULL || tpinfo->eps[3] == NULL) {
 		dev_err(&udev->dev, "%s: one or more endpoints are missing\n",
 			__func__);
-		return -1;
+		return -ENODEV;
 	}
 
 	tpinfo->cmd_pipe = usb_sndbulkpipe(udev,
@@ -968,7 +968,7 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 		
 		if (tpinfo->max_streams <= 1) {
 			dev_err(&udev->dev, "%s: no streams\n", __func__);
-			return -1;
+			return -ENODEV;
 		}
 		
 		tpinfo->use_streams = 1;
@@ -985,7 +985,7 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 				"%s: Couldn't allocate %d streams (%d)\n",
 				__func__, tpinfo->max_streams,
 				tpinfo->num_streams);
-			return -1;
+			return -ENODEV;
 		}
 
 		uasp_set_max_cmds(tpinfo);

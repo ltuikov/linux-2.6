@@ -185,8 +185,6 @@ config USB_UAS
 
 	  If you compile this driver as a module, it will be named uas.
 
-<<<<<<< HEAD
-=======
 config USB_UAS_DEBUG
        bool "Compile in debug mode"
        default n
@@ -216,7 +214,6 @@ config USB_UASP_DEBUG
 
 	If unsure say 'N'.
 
->>>>>>> 8948be8... [USB] UASP: USB Attached SCSI (UAS) protocol driver
 config USB_LIBUSUAL
 	bool "The shared table of common (or usual) storage devices"
 	depends on USB

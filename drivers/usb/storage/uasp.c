@@ -144,6 +144,7 @@ struct uasp_tport_info {
 struct uasp_lu_info {
 	struct completion tmf_completion;
 	unsigned int tmf_resp;
+	void *freed_urb;
 };
 
 /* Command information
@@ -251,12 +252,12 @@ static void uasp_stat_done(struct urb *urb)
 	int id = GET_IU_ID(iu);
 	int tag =  GET_IU_TAG(iu);
 
-	dev_dbg(&urb->dev->dev, "%s: %s IU (0x%02x) tag:%d urb:%p\n",
-		__func__, id_to_str[id], id, tag, urb);
+	dev_dbg(&urb->dev->dev, "%s: %s IU (0x%02x) tag:%d urb:%p status:%d\n",
+		__func__, id_to_str[id], id, tag, urb, urb->status);
 
-	if (urb->status) {
-		dev_err(&urb->dev->dev, "%s: URB BAD STATUS %d\n",
-			__func__, urb->status);
+	if (urb->status ||
+	    (id != IU_SENSE && id != IU_RESP &&
+	     id != IU_RRDY && id != IU_WRDY)) {
 		usb_free_urb(urb);
 		return;
 	}
@@ -266,8 +267,9 @@ static void uasp_stat_done(struct urb *urb)
 		unsigned char *riu = urb->transfer_buffer;
 
 		luinfo->tmf_resp = GET_IU_RESPONSE(riu);
-		complete(&luinfo->tmf_completion);
+		luinfo->freed_urb = urb;
 		usb_free_urb(urb);
+		complete(&luinfo->tmf_completion);
 		return;
 	}
 
@@ -310,7 +312,7 @@ static void uasp_data_done(struct urb *urb)
 	if (urb->status == 0)
 		sdb->resid = sdb->length - urb->actual_length;
 	else
-		dev_err(&urb->dev->dev, "%s: URB BAD STATUS %d\n",
+		dev_err(&urb->dev->dev, "%s: URB status %d\n",
 			__func__, urb->status);
 
 	usb_free_urb(urb);
@@ -430,8 +432,7 @@ static struct urb *uasp_alloc_cmd_urb(struct scsi_cmnd *cmd, gfp_t gfp)
 	ciu[0] = IU_CMD;
 	ciu[2] = cmdinfo->tag >> 8;
 	ciu[3] = cmdinfo->tag;
-	if (sdev->ordered_tags && cmd->request->cmd_flags & REQ_HARDBARRIER)
-		ciu[4] = UASP_TASK_ORDERED;
+	ciu[4] = UASP_TASK_SIMPLE;
 	ciu[6] = len - IU_CMD_LEN;
 	int_to_scsilun(sdev->lun, &slun);
 	memcpy(&ciu[8], slun.scsi_lun, 8);
@@ -487,6 +488,11 @@ static int uasp_alloc_urbs(struct scsi_cmnd *cmd, gfp_t gfp)
 	case DMA_NONE:
 		break;
 	}
+
+	dev_dbg(&tpinfo->udev->dev,
+		"urbs: c:%p di:%p do:%p s:%p\n",
+		cmdinfo->cmd_urb, cmdinfo->datain_urb,
+		cmdinfo->dataout_urb, cmdinfo->status_urb);
 
 	return 0;
 	
@@ -570,8 +576,8 @@ static void uasp_free_urbs(struct scsi_cmnd *cmd)
 	}
 }
 
-static int uasp_queuecommand(struct scsi_cmnd *cmd,
-			    void (*done)(struct scsi_cmnd *))
+static int uasp_queuecommand_lck(struct scsi_cmnd *cmd,
+				 void (*done)(struct scsi_cmnd *))
 {
 	struct scsi_device *sdev = cmd->device;
 	struct uasp_cmd_info *cmdinfo = UASP_CMD_INFO(cmd);
@@ -624,6 +630,8 @@ static int uasp_queuecommand(struct scsi_cmnd *cmd,
 	done(cmd);
 	return 0;
 }
+
+static DEF_SCSI_QCMD(uasp_queuecommand);
 
 /* ---------- Error Recovery ---------- */
 
@@ -710,7 +718,7 @@ static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm)
 	struct urb *resp_urb = NULL;
 	unsigned char *tiu;
 	struct scsi_lun slun;
-	int    res;
+	int    res, res1;
 
 	/* scsi_dev should contain u8[8] for a LUN, not an unsigned int!
 	 */
@@ -728,27 +736,23 @@ static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm)
 
 	init_completion(&luinfo->tmf_completion);
 	luinfo->tmf_resp = 0xFFFFFFFF;
+	luinfo->freed_urb = NULL;
+
+	dev_dbg(&tpinfo->udev->dev, "tmf_urb:%p resp_urb:%p\n",
+		tmf_urb, resp_urb);
 
 	res = usb_submit_urb(resp_urb, GFP_KERNEL);
 	if (res) {
-		complete(&luinfo->tmf_completion);
-		usb_free_urb(tmf_urb);
-		res = usb_unlink_urb(resp_urb);
-		if (res != -EINPROGRESS)
-			usb_free_urb(resp_urb);
-		return res;
+		dev_err(&tpinfo->udev->dev, "error submitting resp urb (%d)\n",
+			res);
+		goto Free_urbs;
 	}
 
 	res = usb_submit_urb(tmf_urb, GFP_KERNEL);
 	if (res) {
-		complete(&luinfo->tmf_completion);
-		res = usb_unlink_urb(tmf_urb);
-		if (res != -EINPROGRESS)
-			usb_free_urb(tmf_urb);
-		res = usb_unlink_urb(resp_urb);
-		if (res != -EINPROGRESS)
-			usb_free_urb(resp_urb);
-		return res;
+		dev_err(&tpinfo->udev->dev, "error submitting tmf urb (%d)\n",
+			res);
+		goto Free_urbs;
 	}
 
 	wait_for_completion_timeout(&luinfo->tmf_completion, UASP_TMF_TIMEOUT);
@@ -758,6 +762,22 @@ static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm)
 	} else {
 		res = 0xFF;
 	}
+
+	if (luinfo->freed_urb != resp_urb)
+		usb_kill_urb(resp_urb);
+
+	luinfo->freed_urb = NULL;
+
+	return res;
+
+ Free_urbs:
+	res1 = usb_unlink_urb(tmf_urb);
+	if (res1 != -EINPROGRESS)
+		usb_free_urb(tmf_urb);
+
+	res1 = usb_unlink_urb(resp_urb);
+	if (res1 != -EINPROGRESS)
+		usb_free_urb(resp_urb);
 
 	return res;
 }

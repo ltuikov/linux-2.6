@@ -130,7 +130,7 @@ init_tag_map(struct request_queue *q, struct blk_queue_tag *tags, int depth)
 	tags->max_depth = depth;
 	tags->tag_index = tag_index;
 	tags->tag_map = tag_map;
-	tags->last_tag = 0;
+	tags->last_tag = -1;
 
 	return 0;
 fail:
@@ -340,7 +340,7 @@ EXPORT_SYMBOL(blk_queue_end_tag);
 int blk_queue_start_tag(struct request_queue *q, struct request *rq)
 {
 	struct blk_queue_tag *bqt = q->queue_tags;
-	unsigned max_depth;
+	int max_depth;
 	int tag;
 
 	if (unlikely((rq->cmd_flags & REQ_QUEUED))) {
@@ -361,14 +361,14 @@ int blk_queue_start_tag(struct request_queue *q, struct request *rq)
 	max_depth = bqt->max_depth;
 	if (!rq_is_sync(rq) && max_depth > 1) {
 		max_depth -= 2;
-		if (!max_depth)
+		if (max_depth <= 0)
 			max_depth = 1;
 		if (q->in_flight[BLK_RW_ASYNC] > max_depth)
 			return 1;
 	}
 
 	if (bqt->last_tag == bqt->max_depth-1)
-		bqt->last_tag = 0;
+		bqt->last_tag = -1;
 
 	do {
 		tag = find_next_zero_bit(bqt->tag_map,

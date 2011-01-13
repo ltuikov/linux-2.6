@@ -636,16 +636,16 @@ static DEF_SCSI_QCMD(uasp_queuecommand);
 /* ---------- Error Recovery ---------- */
 
 static int uasp_alloc_tmf_urb(struct urb **urb, struct uasp_tport_info *tpinfo,
-			      u8 tmf, u16 ttbm, unsigned char *lun)
+			      u8 tmf, u16 ttbm, unsigned char *lun, gfp_t gfp)
 {
 	unsigned char *tiu;
 	int tag;
 	
-	*urb = usb_alloc_urb(0, GFP_KERNEL);
+	*urb = usb_alloc_urb(0, gfp);
 	if (*urb == NULL)
 		return -ENOMEM;
 
-	tiu = kzalloc(IU_TMF_LEN, GFP_KERNEL);
+	tiu = kzalloc(IU_TMF_LEN, gfp);
 	if (tiu == NULL)
 		goto Out_err;
 
@@ -674,15 +674,15 @@ static int uasp_alloc_tmf_urb(struct urb **urb, struct uasp_tport_info *tpinfo,
 }
 
 static int uasp_alloc_resp_urb(struct urb **urb, struct scsi_device *sdev,
-			       int tag)
+			       int tag, gfp_t gfp)
 {
 	unsigned char *resp;
 
-	*urb = usb_alloc_urb(0, GFP_KERNEL);
+	*urb = usb_alloc_urb(0, gfp);
 	if (*urb == NULL)
 		return -ENOMEM;
 
-	resp = kzalloc(STAT_IU_LEN, GFP_KERNEL);
+	resp = kzalloc(STAT_IU_LEN, gfp);
 	if (resp == NULL)
 		goto Out_free;
 
@@ -709,7 +709,7 @@ static int uasp_alloc_resp_urb(struct urb **urb, struct scsi_device *sdev,
  * 
  * If the response code is 0xFF, then the TMF timed out.
  */
-static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm)
+static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm, gfp_t gfp)
 {
 	struct scsi_device *sdev = cmd->device;
 	struct uasp_tport_info *tpinfo = SDEV_TPORT_INFO(sdev);
@@ -723,12 +723,13 @@ static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm)
 	/* scsi_dev should contain u8[8] for a LUN, not an unsigned int!
 	 */
 	int_to_scsilun(sdev->lun, &slun);
-	res = uasp_alloc_tmf_urb(&tmf_urb, tpinfo, tmf, ttbm, slun.scsi_lun);
+	res = uasp_alloc_tmf_urb(&tmf_urb, tpinfo, tmf, ttbm, slun.scsi_lun,
+				 gfp);
 	if (res)
 		return -ENOMEM;
 
 	tiu = tmf_urb->transfer_buffer;
-	res = uasp_alloc_resp_urb(&resp_urb, sdev, GET_IU_TAG(tiu));
+	res = uasp_alloc_resp_urb(&resp_urb, sdev, GET_IU_TAG(tiu), gfp);
 	if (res) {
 		usb_free_urb(tmf_urb);
 		return -ENOMEM;
@@ -741,14 +742,14 @@ static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm)
 	dev_dbg(&tpinfo->udev->dev, "tmf_urb:%p resp_urb:%p\n",
 		tmf_urb, resp_urb);
 
-	res = usb_submit_urb(resp_urb, GFP_KERNEL);
+	res = usb_submit_urb(resp_urb, gfp);
 	if (res) {
 		dev_err(&tpinfo->udev->dev, "error submitting resp urb (%d)\n",
 			res);
 		goto Free_urbs;
 	}
 
-	res = usb_submit_urb(tmf_urb, GFP_KERNEL);
+	res = usb_submit_urb(tmf_urb, gfp);
 	if (res) {
 		dev_err(&tpinfo->udev->dev, "error submitting tmf urb (%d)\n",
 			res);
@@ -782,7 +783,7 @@ static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm)
 	return res;
 }
 
-static int uasp_er_tmf(struct scsi_cmnd *cmd, u8 tmf)
+static int uasp_er_tmf(struct scsi_cmnd *cmd, u8 tmf, gfp_t gfp)
 {
 	struct scsi_device *sdev = cmd->device;
 	int tag;
@@ -793,7 +794,7 @@ static int uasp_er_tmf(struct scsi_cmnd *cmd, u8 tmf)
 	else
 		tag = cmd->request->tag + CMD_TAG_OFFS;
 
-	res = uasp_do_tmf(cmd, tmf, tag);
+	res = uasp_do_tmf(cmd, tmf, tag, gfp);
 
 	dev_dbg(&SDEV_TPORT_INFO(sdev)->udev->dev,
 		"%s: cmd:%p (0x%02x) tag:%d tmf:0x%02x resp:0x%08x\n",
@@ -810,17 +811,17 @@ static int uasp_er_tmf(struct scsi_cmnd *cmd, u8 tmf)
 
 static int uasp_abort_cmd(struct scsi_cmnd *cmd)
 {
-	return uasp_er_tmf(cmd, TMF_ABORT_TASK);
+	return uasp_er_tmf(cmd, TMF_ABORT_TASK, GFP_ATOMIC);
 }
 
 static int uasp_device_reset(struct scsi_cmnd *cmd)
 {
-	return uasp_er_tmf(cmd, TMF_LU_RESET);
+	return uasp_er_tmf(cmd, TMF_LU_RESET, GFP_ATOMIC);
 }
 
 static int uasp_target_reset(struct scsi_cmnd *cmd)
 {
-	return uasp_er_tmf(cmd, TMF_IT_NEXUS_RESET);
+	return uasp_er_tmf(cmd, TMF_IT_NEXUS_RESET, GFP_ATOMIC);
 }
 
 static int uasp_bus_reset(struct scsi_cmnd *cmd)
@@ -853,7 +854,7 @@ static int uasp_bus_reset(struct scsi_cmnd *cmd)
 
 static int uasp_slave_alloc(struct scsi_device *sdev)
 {
-	sdev->hostdata = kzalloc(sizeof(struct uasp_lu_info), GFP_KERNEL);
+	sdev->hostdata = kzalloc(sizeof(struct uasp_lu_info), GFP_ATOMIC);
 	if (sdev->hostdata == NULL)
 		return -ENOMEM;
 
@@ -999,7 +1000,7 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 		tpinfo->num_streams = usb_alloc_streams(iface,
 							&tpinfo->eps[1], 3,
 							max_streams,
-							GFP_KERNEL);
+							GFP_ATOMIC);
 		if (tpinfo->num_streams <= 0) {
 			dev_err(&udev->dev,
 				"%s: Couldn't allocate %d streams (%d)\n",
@@ -1071,7 +1072,7 @@ static int uasp_probe(struct usb_interface *iface,
 			return res;
 	}
 
-	tpinfo = kzalloc(sizeof(struct uasp_tport_info), GFP_KERNEL);
+	tpinfo = kzalloc(sizeof(struct uasp_tport_info), GFP_ATOMIC);
 	if (tpinfo == NULL)
 		return -ENOMEM;
 
@@ -1130,7 +1131,7 @@ static void uasp_disconnect(struct usb_interface *iface)
 	struct uasp_tport_info *tpinfo = (void *)shost->hostdata[0];
 
 	scsi_remove_host(shost);
-	usb_free_streams(iface, &tpinfo->eps[1], 3, GFP_KERNEL);
+	usb_free_streams(iface, &tpinfo->eps[1], 3, GFP_ATOMIC);
 
 	kfree(tpinfo);
 }

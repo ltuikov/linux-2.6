@@ -11,10 +11,6 @@ obj-$(CONFIG_USB_UAS)		+= uas.o
 obj-$(CONFIG_USB_UASP)		+= uasp.o
 obj-$(CONFIG_USB_STORAGE)	+= usb-storage.o
 
-ifeq ($(CONFIG_USB_UAS_DEBUG),y)
-	EXTRA_CFLAGS += -DUAS_DEBUG
-endif
-
 ifeq ($(CONFIG_USB_UASP_DEBUG),y)
 	EXTRA_CFLAGS += -DUASP_DEBUG
 endif

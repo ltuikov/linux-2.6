@@ -2845,14 +2845,14 @@ fix_extent_len:
  * to an uninitialized extent.
  *
  * Writing to an uninitized extent may result in splitting the uninitialized
- * extent into multiple /intialized unintialized extents (up to three)
+ * extent into multiple /initialized uninitialized extents (up to three)
  * There are three possibilities:
  *   a> There is no split required: Entire extent should be uninitialized
  *   b> Splits in two extents: Write is happening at either end of the extent
  *   c> Splits in three extents: Somone is writing in middle of the extent
  *
  * One of more index blocks maybe needed if the extent tree grow after
- * the unintialized extent split. To prevent ENOSPC occur at the IO
+ * the uninitialized extent split. To prevent ENOSPC occur at the IO
  * complete, we need to split the uninitialized extent before DIO submit
  * the IO. The uninitialized extent called at this time will be split
  * into three uninitialized extent(at most). After IO complete, the part
@@ -3627,14 +3627,15 @@ static void ext4_falloc_update_inode(struct inode *inode,
 }
 
 /*
- * preallocate space for a file. This implements ext4's fallocate inode
+ * preallocate space for a file. This implements ext4's fallocate file
  * operation, which gets called from sys_fallocate system call.
  * For block-mapped files, posix_fallocate should fall back to the method
  * of writing zeroes to the required new blocks (the same behavior which is
  * expected for file systems which do not support fallocate() system call).
  */
-long ext4_fallocate(struct inode *inode, int mode, loff_t offset, loff_t len)
+long ext4_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 {
+	struct inode *inode = file->f_path.dentry->d_inode;
 	handle_t *handle;
 	loff_t new_size;
 	unsigned int max_blocks;
@@ -3644,16 +3645,16 @@ long ext4_fallocate(struct inode *inode, int mode, loff_t offset, loff_t len)
 	struct ext4_map_blocks map;
 	unsigned int credits, blkbits = inode->i_blkbits;
 
+	/* We only support the FALLOC_FL_KEEP_SIZE mode */
+	if (mode & ~FALLOC_FL_KEEP_SIZE)
+		return -EOPNOTSUPP;
+
 	/*
 	 * currently supporting (pre)allocate mode for extent-based
 	 * files _only_
 	 */
 	if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)))
 		return -EOPNOTSUPP;
-
-	/* preallocation to directories is currently not supported */
-	if (S_ISDIR(inode->i_mode))
-		return -ENODEV;
 
 	map.m_lblk = offset >> blkbits;
 	/*

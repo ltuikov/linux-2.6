@@ -1,5 +1,6 @@
 header-y += byteorder/
 header-y += can/
+header-y += caif/
 header-y += dvb/
 header-y += hdlc/
 header-y += isdn/
@@ -158,6 +159,7 @@ header-y += icmpv6.h
 header-y += if.h
 header-y += if_addr.h
 header-y += if_addrlabel.h
+header-y += if_alg.h
 header-y += if_arcnet.h
 header-y += if_arp.h
 header-y += if_bonding.h

@@ -1633,7 +1633,7 @@
    (~misc_registers_sw_timer_cfg_4.sw_timer_cfg_4[1] ) is set */
 #define MISC_REG_SW_TIMER_RELOAD_VAL_4				 0xa2fc
 /* [RW 32] the value of the counter for sw timers1-8. there are 8 addresses
-   in this register. addres 0 - timer 1; address 1 - timer 2, ...  address 7 -
+   in this register. address 0 - timer 1; address 1 - timer 2, ...  address 7 -
    timer 8 */
 #define MISC_REG_SW_TIMER_VAL					 0xa5c0
 /* [RW 1] Set by the MCP to remember if one or more of the drivers is/are
@@ -6194,7 +6194,11 @@ Theotherbitsarereservedandshouldbezero*/
 #define MDIO_CTL_REG_84823_MEDIA_PRIORITY_COPPER	0x0000
 #define MDIO_CTL_REG_84823_MEDIA_PRIORITY_FIBER		0x0100
 #define MDIO_CTL_REG_84823_MEDIA_FIBER_1G			0x1000
+#define MDIO_CTL_REG_84823_USER_CTRL_REG		0x4005
+#define MDIO_CTL_REG_84823_USER_CTRL_CMS		0x0080
 
+#define MDIO_PMA_REG_84823_CTL_LED_CTL_1		0xa8e3
+#define MDIO_PMA_REG_84823_LED3_STRETCH_EN		0x0080
 
 #define IGU_FUNC_BASE			0x0400
 

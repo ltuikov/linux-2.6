@@ -102,11 +102,6 @@ cifs_readdir_lookup(struct dentry *parent, struct qstr *name,
 		return NULL;
 	}
 
-	if (cifs_sb_master_tcon(CIFS_SB(sb))->nocase)
-		d_set_d_op(dentry, &cifs_ci_dentry_ops);
-	else
-		d_set_d_op(dentry, &cifs_dentry_ops);
-
 	alias = d_materialise_unique(dentry, inode);
 	if (alias != NULL) {
 		dput(dentry);
@@ -769,7 +764,6 @@ int cifs_readdir(struct file *file, void *direntry, filldir_t filldir)
 {
 	int rc = 0;
 	int xid, i;
-	struct cifs_sb_info *cifs_sb;
 	struct cifsTconInfo *pTcon;
 	struct cifsFileInfo *cifsFile = NULL;
 	char *current_entry;
@@ -779,8 +773,6 @@ int cifs_readdir(struct file *file, void *direntry, filldir_t filldir)
 	unsigned int max_len;
 
 	xid = GetXid();
-
-	cifs_sb = CIFS_SB(file->f_path.dentry->d_sb);
 
 	/*
 	 * Ensure FindFirst doesn't fail before doing filldir() for '.' and

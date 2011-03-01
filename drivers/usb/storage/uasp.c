@@ -119,6 +119,14 @@ MODULE_PARM_DESC(MaxNumStreams, "\n"
 #define DATAIN_PIPE_ID  3
 #define DATAOUT_PIPE_ID 4
 
+/* 1 control (default) and 4 as per UAS.
+ */
+#define UASP_NUM_EPS	(1+4)
+
+#define FIRST_EP_WSTREAMS STAT_PIPE_ID
+#define LAST_EP_WSTREAMS  DATAOUT_PIPE_ID
+#define NUM_EPS_WSTREAMS  (LAST_EP_WSTREAMS - FIRST_EP_WSTREAMS + 1)
+
 /* Task attribute
  */
 #define UASP_TASK_SIMPLE  0
@@ -132,7 +140,7 @@ struct uasp_tport_info {
 	struct usb_interface *iface;
 	struct usb_device *udev;
 	unsigned cmd_pipe, status_pipe, datain_pipe, dataout_pipe;
-	struct usb_host_endpoint *eps[4];
+	struct usb_host_endpoint *eps[UASP_NUM_EPS];
 	unsigned use_streams:1;
 	int max_streams;	  /* streams supported */
 	int num_streams;	  /* usable streams [1, num_streams] */
@@ -237,7 +245,7 @@ static const char *id_to_str[] = {
 #endif /* UASP_DEBUG */
 
 /**
- * uasp_stat_cmplt -- Status pipe urb completion
+ * uasp_stat_done -- Status pipe urb completion
  * @urb: the URB that completed
  *
  * Anything we expect to come back on the status pipe
@@ -462,6 +470,9 @@ static int uasp_alloc_urbs(struct scsi_cmnd *cmd, gfp_t gfp)
 	if (cmdinfo->cmd_urb == NULL || cmdinfo->status_urb == NULL)
 		goto Out_err1;
 
+	cmdinfo->status_urb->ep = tpinfo->eps[STAT_PIPE_ID];
+	cmdinfo->cmd_urb->ep = tpinfo->eps[CMD_PIPE_ID];
+
 	switch (cmd->sc_data_direction) {
 	case DMA_BIDIRECTIONAL:
 	case DMA_TO_DEVICE:
@@ -472,6 +483,9 @@ static int uasp_alloc_urbs(struct scsi_cmnd *cmd, gfp_t gfp)
 					    scsi_out(cmd));
 		if (cmdinfo->dataout_urb == NULL)
 			goto Out_err2;
+
+		cmdinfo->dataout_urb->ep = tpinfo->eps[DATAOUT_PIPE_ID];
+
 		if (cmd->sc_data_direction != DMA_BIDIRECTIONAL)
 			break;
 		else {
@@ -481,6 +495,9 @@ static int uasp_alloc_urbs(struct scsi_cmnd *cmd, gfp_t gfp)
 					    tpinfo->datain_pipe,
 					    cmdinfo->tag,
 					    scsi_in(cmd));
+
+		cmdinfo->datain_urb->ep = tpinfo->eps[DATAIN_PIPE_ID];
+
 		if (cmdinfo->datain_urb == NULL)
 			goto Out_err2;
 		}
@@ -834,6 +851,7 @@ static int uasp_bus_reset(struct scsi_cmnd *cmd)
 	res = usb_lock_device_for_reset(udev, tpinfo->iface);
 	if (res == 0) {
 		res = usb_reset_device(udev);
+		usb_unlock_device(udev);
 	} else {
 		dev_err(&udev->dev, "%s: cmd:%p (0x%02x) failed to "
 			"lock dev (%d)\n",
@@ -954,34 +972,37 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 			if (desc[0] != 4 || desc[1] != USB_DT_PIPE_USAGE)
 				continue;
 			else if (CMD_PIPE_ID <= pid && pid <= DATAOUT_PIPE_ID) {
-				tpinfo->eps[pid - 1] = &epa[i];
+				tpinfo->eps[pid] = &epa[i];
 				break;
 			}
 		}
 	}
 
-	if (tpinfo->eps[0] == NULL || tpinfo->eps[1] == NULL ||
-	    tpinfo->eps[2] == NULL || tpinfo->eps[3] == NULL) {
+	if (tpinfo->eps[CMD_PIPE_ID] == NULL ||
+	    tpinfo->eps[STAT_PIPE_ID] == NULL ||
+	    tpinfo->eps[DATAIN_PIPE_ID] == NULL ||
+	    tpinfo->eps[DATAOUT_PIPE_ID] == NULL) {
 		dev_err(&udev->dev, "%s: one or more endpoints are missing\n",
 			__func__);
 		return -ENODEV;
 	}
 
 	tpinfo->cmd_pipe = usb_sndbulkpipe(udev,
-					 tpinfo->eps[0]->desc.bEndpointAddress);
+			 tpinfo->eps[CMD_PIPE_ID]->desc.bEndpointAddress);
 	tpinfo->status_pipe = usb_rcvbulkpipe(udev,
-					 tpinfo->eps[1]->desc.bEndpointAddress);
+			 tpinfo->eps[STAT_PIPE_ID]->desc.bEndpointAddress);
 	tpinfo->datain_pipe = usb_rcvbulkpipe(udev,
-					 tpinfo->eps[2]->desc.bEndpointAddress);
+			 tpinfo->eps[DATAIN_PIPE_ID]->desc.bEndpointAddress);
 	tpinfo->dataout_pipe = usb_sndbulkpipe(udev,
-					 tpinfo->eps[3]->desc.bEndpointAddress);
+			 tpinfo->eps[DATAOUT_PIPE_ID]->desc.bEndpointAddress);
 
 	if (udev->speed == USB_SPEED_SUPER) {
 		int max_streams;
 
-		for (i = 1; i < 4; i++) {
+		for (i = FIRST_EP_WSTREAMS; i <= LAST_EP_WSTREAMS; i++) {
 			if (tpinfo->max_streams == 0)
-				tpinfo->max_streams = USB_SS_MAX_STREAMS(tpinfo->eps[i]->ss_ep_comp.bmAttributes);
+				tpinfo->max_streams =
+		   USB_SS_MAX_STREAMS(tpinfo->eps[i]->ss_ep_comp.bmAttributes);
 			else
 				tpinfo->max_streams = min(tpinfo->max_streams,
 		   USB_SS_MAX_STREAMS(tpinfo->eps[i]->ss_ep_comp.bmAttributes));
@@ -997,10 +1018,12 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 			max_streams = min(MaxNumStreams, tpinfo->max_streams);
 		else
 			max_streams = tpinfo->max_streams;
-		tpinfo->num_streams = usb_alloc_streams(iface,
-							&tpinfo->eps[1], 3,
-							max_streams,
-							GFP_ATOMIC);
+
+		tpinfo->num_streams =
+			usb_alloc_streams(iface,
+					  &tpinfo->eps[FIRST_EP_WSTREAMS],
+					  NUM_EPS_WSTREAMS, max_streams,
+					  GFP_ATOMIC);
 		if (tpinfo->num_streams <= 0) {
 			dev_err(&udev->dev,
 				"%s: Couldn't allocate %d streams (%d)\n",
@@ -1131,7 +1154,8 @@ static void uasp_disconnect(struct usb_interface *iface)
 	struct uasp_tport_info *tpinfo = (void *)shost->hostdata[0];
 
 	scsi_remove_host(shost);
-	usb_free_streams(iface, &tpinfo->eps[1], 3, GFP_ATOMIC);
+	usb_free_streams(iface, &tpinfo->eps[FIRST_EP_WSTREAMS],
+			 NUM_EPS_WSTREAMS, GFP_ATOMIC);
 
 	kfree(tpinfo);
 }

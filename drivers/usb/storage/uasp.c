@@ -497,10 +497,10 @@ static int uasp_alloc_urbs(struct scsi_cmnd *cmd, gfp_t gfp)
 					    scsi_in(cmd));
 		if (cmdinfo->datain_urb == NULL)
 			goto Out_err2;
-		}
-
+		
 		cmdinfo->datain_urb->ep = tpinfo->eps[DATAIN_PIPE_ID];
-				
+
+		}
 		break;
 	case DMA_NONE:
 		break;

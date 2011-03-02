@@ -416,7 +416,6 @@ static struct urb *uasp_alloc_cmd_urb(struct scsi_cmnd *cmd, gfp_t gfp)
 {
 	struct uasp_cmd_info *cmdinfo = UASP_CMD_INFO(cmd);
 	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
-	struct usb_device *udev = tpinfo->udev;
 	struct scsi_device *sdev = cmd->device;
 	struct urb *urb;
 	struct scsi_lun slun;
@@ -446,9 +445,8 @@ static struct urb *uasp_alloc_cmd_urb(struct scsi_cmnd *cmd, gfp_t gfp)
 	memcpy(&ciu[8], slun.scsi_lun, 8);
 	memcpy(&ciu[16], cmd->cmnd, cmd->cmd_len);
 
-	usb_fill_bulk_urb(urb, udev, tpinfo->cmd_pipe, ciu, len, usb_free_urb,
-			  NULL);
-	urb->transfer_flags |= URB_FREE_BUFFER;
+	uasp_fill_cmdp_urb(urb, tpinfo, ciu, len);
+
 	return urb;
  Free:
 	usb_free_urb(urb);

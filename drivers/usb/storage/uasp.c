@@ -178,29 +178,53 @@ static void uasp_sense(struct urb *urb, struct scsi_cmnd *cmd, u16 tag)
 {
 	unsigned char *iu = urb->transfer_buffer;
 	struct scsi_device *sdev = cmd->device;
+	int id = GET_IU_ID(iu);
 
-	cmd->result = GET_IU_STATUS(iu);
+	if (id == IU_RESP) {
+		unsigned int resp = GET_IU_RESPONSE(iu);
 
-	if (urb->actual_length > IU_SENSE_LEN) {
-		unsigned slen = GET_IU_LENGTH(iu);
-
-		if (urb->actual_length >= IU_SENSE_LEN + slen) {
-			slen = min(slen, (unsigned) SCSI_SENSE_BUFFERSIZE);
-		} else {
-			unsigned dlen = slen;
-
-			slen = min(urb->actual_length - IU_SENSE_LEN,
-				   (unsigned) SCSI_SENSE_BUFFERSIZE);
-
+		if (TMR_RESPONSE_CODE(resp) == TMR_IIU)
+			cmd->result = DID_ABORT << 16;
+		else {
+			cmd->result = DID_ERROR << 16;
 			dev_err(&SDEV_TPORT_INFO(sdev)->udev->dev,
-				"%s: short SENSE IU by %d bytes, "
-				"using %d/%d bytes of sense data\n",
-				__func__,
-				IU_SENSE_LEN + slen - urb->actual_length,
-				slen, dlen);
+				"%s: doesn't know how to handle TMR 0x%08x\n",
+				__func__, resp);
 		}
-		memcpy(cmd->sense_buffer, iu + IU_SENSE_LEN, slen);
+	} else if (likely(id == IU_SENSE)) {
+		cmd->result = GET_IU_STATUS(iu);
+
+		if (urb->actual_length > IU_SENSE_LEN) {
+			unsigned slen = GET_IU_LENGTH(iu);
+
+			if (urb->actual_length >= IU_SENSE_LEN + slen) {
+				slen = min(slen,
+					   (unsigned) SCSI_SENSE_BUFFERSIZE);
+			} else {
+				unsigned dlen = slen;
+
+				slen = min(urb->actual_length - IU_SENSE_LEN,
+					   (unsigned) SCSI_SENSE_BUFFERSIZE);
+
+				dev_err(&SDEV_TPORT_INFO(sdev)->udev->dev,
+					"%s: short SENSE IU by %d bytes, "
+					"using %d/%d bytes of sense data\n",
+					__func__,
+					IU_SENSE_LEN + slen
+					- urb->actual_length, slen, dlen);
+			}
+			memcpy(cmd->sense_buffer, iu + IU_SENSE_LEN, slen);
+		}
+	} else {
+		/* Impossible! */
+		cmd->result = DID_ERROR << 16;
+		dev_err(&SDEV_TPORT_INFO(sdev)->udev->dev,
+			"%s: called with IU ID 0x%02x\n", __func__, id);
 	}
+
+	dev_dbg(&SDEV_TPORT_INFO(sdev)->udev->dev,
+		"%s: completing %p result 0x%02x\n",
+		__func__, cmd, cmd->result);
 
 	if (tag == CMD_UNTAGGED_TAG)
 		sdev->current_cmnd = NULL;
@@ -273,12 +297,15 @@ static void uasp_stat_done(struct urb *urb)
 	if (id == IU_RESP) {
 		struct uasp_lu_info *luinfo = SDEV_LU_INFO(sdev);
 		unsigned char *riu = urb->transfer_buffer;
+		unsigned int resp = GET_IU_RESPONSE(riu);
 
-		luinfo->tmf_resp = GET_IU_RESPONSE(riu);
-		luinfo->freed_urb = urb;
-		usb_free_urb(urb);
-		complete(&luinfo->tmf_completion);
-		return;
+		if (likely(TMR_RESPONSE_CODE(resp) != TMR_IIU)) {
+			luinfo->tmf_resp = resp;
+			luinfo->freed_urb = urb;
+			usb_free_urb(urb);
+			complete(&luinfo->tmf_completion);
+			return;
+		}
 	}
 
 	if (tag == CMD_UNTAGGED_TAG)
@@ -291,6 +318,7 @@ static void uasp_stat_done(struct urb *urb)
 	
 	switch (id) {
 	case IU_SENSE:
+	case IU_RESP:
 		uasp_sense(urb, cmd, tag);
 		break;
 	case IU_RRDY:

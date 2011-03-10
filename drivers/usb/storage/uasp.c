@@ -752,9 +752,8 @@ static int uasp_alloc_resp_urb(struct urb **urb, struct scsi_device *sdev,
  * 
  * If the response code is 0xFF, then the TMF timed out.
  */
-static int uasp_do_tmf(struct scsi_cmnd *cmd, u8 tmf, u8 ttbm, gfp_t gfp)
+static int uasp_do_tmf(struct scsi_device *sdev, u8 tmf, u8 ttbm, gfp_t gfp)
 {
-	struct scsi_device *sdev = cmd->device;
 	struct uasp_tport_info *tpinfo = SDEV_TPORT_INFO(sdev);
 	struct uasp_lu_info *luinfo = SDEV_LU_INFO(sdev);
 	struct urb *tmf_urb = NULL;
@@ -832,12 +831,16 @@ static int uasp_er_tmf(struct scsi_cmnd *cmd, u8 tmf, gfp_t gfp)
 	int tag;
 	int res;
 
-	if (sdev->current_cmnd == cmd)
-		tag = CMD_UNTAGGED_TAG;
-	else
-		tag = cmd->request->tag + CMD_TAG_OFFS;
+	if (tmf == TMF_ABORT_TASK || tmf == TMF_QUERY_TASK) {
+		if (sdev->current_cmnd != cmd && cmd->request != NULL)
+			tag = cmd->request->tag + CMD_TAG_OFFS;
+		else
+			tag = CMD_UNTAGGED_TAG;
+	} else {
+		tag = 0;
+	}
 
-	res = uasp_do_tmf(cmd, tmf, tag, gfp);
+	res = uasp_do_tmf(sdev, tmf, tag, gfp);
 
 	dev_dbg(&SDEV_TPORT_INFO(sdev)->udev->dev,
 		"%s: cmd:%p (0x%02x) tag:%d tmf:0x%02x resp:0x%08x\n",

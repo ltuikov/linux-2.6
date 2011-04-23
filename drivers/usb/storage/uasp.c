@@ -1,6 +1,6 @@
 /*
  * USB Attached SCSI (UAS) protocol driver
- * Copyright Luben Tuikov, 2010
+ * Copyright Luben Tuikov, 2010, 2011
  *
  * This driver allows you to connect to UAS devices and use them as
  * SCSI devices.
@@ -42,10 +42,6 @@ MODULE_PARM_DESC(MaxNumStreams, "\n"
 	"\tnumber of streams will be limited to the minimum reported by the\n"
 	"\tattached device and this value. Valid values are -1, default,\n"
 	"\tand 1 to 0xFFEF.");
-
-#define TMF_TAG          1
-#define CMD_UNTAGGED_TAG 2
-#define CMD_TAG_OFFS     3
 
 /* Information unit types
  */
@@ -134,6 +130,14 @@ MODULE_PARM_DESC(MaxNumStreams, "\n"
 #define UASP_TASK_ORDERED 2
 #define UASP_TASK_ACA     4
 
+struct uasp_tag_data {
+	int first_tag_avail;
+	int num_tags;
+	int last_tag_alloc;		  /* last tag allocated */
+	struct scsi_cmnd **tag_cmd;
+	unsigned long *tag_map;
+};
+
 /* Target device port information
  */
 struct uasp_tport_info {
@@ -145,6 +149,8 @@ struct uasp_tport_info {
 	int max_streams;	  /* streams supported */
 	int num_streams;	  /* usable streams [1, num_streams] */
 	int max_cmds;		  /* max cmds we can queue */
+
+	struct uasp_tag_data tag_data; /* Per I_T nexus */
 };
 
 /* Current task management information
@@ -172,10 +178,97 @@ struct uasp_cmd_info {
 	((struct uasp_tport_info *)((__Sdev)->host->hostdata[0]))
 #define SDEV_LU_INFO(__Sdev) ((struct uasp_lu_info *)((__Sdev)->hostdata))
 
+/* ---------- SCSI Tags processing ---------- */
+
+static int uasp_tag_alloc(struct uasp_tag_data *td, struct scsi_cmnd *cmd)
+{
+	int tag;
+
+	if (td->last_tag_alloc >= td->num_tags - 1)
+		td->last_tag_alloc = td->first_tag_avail - 1;
+
+	do {
+		tag = find_next_zero_bit(td->tag_map, td->num_tags,
+					 td->last_tag_alloc + 1);
+		if (tag >= td->num_tags)
+			return -1;
+
+	} while (test_and_set_bit_lock(tag, td->tag_map));
+
+	td->last_tag_alloc = tag;
+	td->tag_cmd[tag] = cmd;
+
+	return tag;
+}
+
+static int uasp_tag_lookup(struct uasp_tag_data *td, struct scsi_cmnd *cmd)
+{
+	struct uasp_cmd_info *ci = UASP_CMD_INFO(cmd);
+
+	if (td->tag_cmd[ci->tag] == cmd && test_bit(ci->tag, td->tag_map))
+		return ci->tag;
+	else
+		return -1;
+}
+
+static inline struct scsi_cmnd *uasp_cmd_lookup(struct uasp_tag_data *td,
+						int tag)
+{
+	return td->tag_cmd[tag];
+}
+
+static void uasp_tag_free(struct uasp_tag_data *td, int tag)
+{
+	td->tag_cmd[tag] = NULL;
+	clear_bit(tag, td->tag_map);
+}
+
+static void uasp_tag_releaseall(struct uasp_tag_data *td)
+{
+	int i;
+
+	for (i = 0; i < td->num_tags; i++)
+		td->tag_cmd[i] = NULL;
+	bitmap_zero(td->tag_map, td->num_tags);
+}
+
+static int uasp_alloc_tags(struct uasp_tag_data *td, int first_tag,
+			   int last_tag, gfp_t gfp)
+{
+	/* Don't bother with offsets in the case where first_tag is a
+	 * large number in order to preserve memory space. This makes
+	 * the code simpler. first_tag for most protocols is either 0
+	 * or 1. In UAS it is 1.
+	 */
+	td->first_tag_avail = first_tag;
+	td->num_tags = last_tag+1;
+	td->last_tag_alloc = td->first_tag_avail - 1;
+
+	td->tag_cmd = kzalloc(td->num_tags * sizeof(*td->tag_cmd), gfp);
+	if (td->tag_cmd == NULL)
+		return -ENOMEM;
+
+	td->tag_map = kzalloc(BITS_TO_LONGS(td->num_tags) * sizeof(long), gfp);
+	if (td->tag_map == NULL) {
+		kfree(td->tag_cmd);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static void uasp_free_tags(struct uasp_tag_data *td)
+{
+	kfree(td->tag_cmd);
+	kfree(td->tag_map);
+	memset(td, 0, sizeof(*td));
+}
+
 /* ---------- IU processors ---------- */
 
 static void uasp_sense(struct urb *urb, struct scsi_cmnd *cmd, u16 tag)
 {
+	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
 	unsigned char *iu = urb->transfer_buffer;
 	struct scsi_device *sdev = cmd->device;
 	int id = GET_IU_ID(iu);
@@ -226,10 +319,9 @@ static void uasp_sense(struct urb *urb, struct scsi_cmnd *cmd, u16 tag)
 		"%s: completing %p result 0x%02x\n",
 		__func__, cmd, cmd->result);
 
-	if (tag == CMD_UNTAGGED_TAG)
-		sdev->current_cmnd = NULL;
 	cmd->scsi_done(cmd);
 	usb_free_urb(urb);
+	uasp_tag_free(&tpinfo->tag_data, tag);
 }
 
 /* High-Speed devices only
@@ -308,12 +400,8 @@ static void uasp_stat_done(struct urb *urb)
 		}
 	}
 
-	if (tag == CMD_UNTAGGED_TAG)
-		cmd = sdev->current_cmnd;
-	else if (tag >= CMD_TAG_OFFS)
-		cmd = scsi_find_tag(sdev, tag - CMD_TAG_OFFS);
-
-	if (cmd == NULL)
+	cmd = uasp_cmd_lookup(&tpinfo->tag_data, tag);
+	if (unlikely(cmd == NULL))
 		goto Out_no_cmd;
 	
 	switch (id) {
@@ -328,6 +416,7 @@ static void uasp_stat_done(struct urb *urb)
 		uasp_xfer_data(urb, cmd, tpinfo, DMA_TO_DEVICE, tag);
 		break;
 	default:
+		uasp_tag_free(&tpinfo->tag_data, tag);
 		usb_free_urb(urb);
 		break;
 	}
@@ -335,7 +424,8 @@ static void uasp_stat_done(struct urb *urb)
 	return;
 
  Out_no_cmd:
-	dev_dbg(&urb->dev->dev, "%s: No command!?\n", __func__);
+	dev_dbg(&urb->dev->dev, "%s: No command with tag %d!?\n", __func__,tag);
+	uasp_tag_free(&tpinfo->tag_data, tag);
 	usb_free_urb(urb);
 }
 
@@ -622,27 +712,17 @@ static void uasp_free_urbs(struct scsi_cmnd *cmd)
 static int uasp_queuecommand_lck(struct scsi_cmnd *cmd,
 				 void (*done)(struct scsi_cmnd *))
 {
-	struct scsi_device *sdev = cmd->device;
+	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
 	struct uasp_cmd_info *cmdinfo = UASP_CMD_INFO(cmd);
 	int res;
 
-	BUILD_BUG_ON(sizeof(struct uasp_cmd_info) > sizeof(struct scsi_pointer));
+	BUILD_BUG_ON(sizeof(struct uasp_cmd_info) >sizeof(struct scsi_pointer));
 
-	/* If LLDDs are NOT to maintain their own tags, (but the block
-	 * layer would), THEN ANY AND ALL scsi_cmnds passed to the
-	 * queuecommand entry of a LLDD MUST HAVE A VALID,
-	 * REVERSE-MAPPABLE tag, REGARDLESS of where the command came
-	 * from, regardless of whether the device supports tags, and
-	 * regardless of how many tags it supports.
-	 */
-	if (blk_rq_tagged(cmd->request)) {
-		cmdinfo->tag = cmd->request->tag + CMD_TAG_OFFS;
-	} else if (sdev->current_cmnd == NULL) {
-		sdev->current_cmnd = cmd;
-		cmdinfo->tag = CMD_UNTAGGED_TAG;
-	} else {
+	cmdinfo->tag = uasp_tag_alloc(&tpinfo->tag_data, cmd);
+	if (cmdinfo->tag < 0) {
 		cmd->result = DID_ABORT << 16;
-		goto Out_err;
+		done(cmd);
+		return 0;
 	}
 
 	cmd->scsi_done = done;
@@ -650,14 +730,14 @@ static int uasp_queuecommand_lck(struct scsi_cmnd *cmd,
 	res = uasp_alloc_urbs(cmd, GFP_ATOMIC);
 	if (res) {
 		cmd->result = DID_ABORT << 16;
-		goto Out_err_null;
+		goto Out_err;
 	}
 
 	res = uasp_submit_urbs(cmd, GFP_ATOMIC);
 	if (res) {
 		cmd->result = DID_NO_CONNECT << 16;
 		uasp_free_urbs(cmd);
-		goto Out_err_null;
+		goto Out_err;
 	}
 	
 	dev_dbg(&UASP_TPORT_INFO(cmd)->udev->dev,
@@ -666,10 +746,8 @@ static int uasp_queuecommand_lck(struct scsi_cmnd *cmd,
 		cmd->device->lun, res);
 
 	return 0;
- Out_err_null:
-	if (sdev->current_cmnd == cmd)
-		sdev->current_cmnd = NULL;
- Out_err:
+Out_err:
+	uasp_tag_free(&tpinfo->tag_data, cmdinfo->tag);
 	done(cmd);
 	return 0;
 }
@@ -692,13 +770,11 @@ static int uasp_alloc_tmf_urb(struct urb **urb, struct uasp_tport_info *tpinfo,
 	if (tiu == NULL)
 		goto Out_err;
 
-	/* If LLDDs are NOT to maintain their own tags, (but the block
-	 * layer would), THEN LLDDs must be able to call a function of
-	 * some sort and reserve a tag from the same pool and obtain
-	 * it for their own use, as well as being able to free it back
-	 * later. See the comment in uasp_set_max_cmds().
-	 */
-	tag = TMF_TAG;
+	tag = uasp_tag_alloc(&tpinfo->tag_data, NULL);
+	if (tag < 0) {
+		kfree(tiu);
+		goto Out_err;
+	}
 
 	tiu[0] = IU_TMF;
 	tiu[2] = tag >> 8;
@@ -743,7 +819,7 @@ static int uasp_alloc_resp_urb(struct urb **urb, struct scsi_device *sdev,
  * uasp_do_tmf -- Execute the desired TMF
  * @sdev: the device to which we should send the TMF
  * @tmf:  the task management function to execute
- * @ttbm: the tag of task to be managed
+ * @ttbm: the tag of task to be managed, or 0
  *
  * This function returns a negative value on error (-ENOMEM, etc), or
  * an integer with bytes 3, 2 and 1 being the high to low byte of the
@@ -759,6 +835,7 @@ static int uasp_do_tmf(struct scsi_device *sdev, u8 tmf, u8 ttbm, gfp_t gfp)
 	struct urb *tmf_urb = NULL;
 	struct urb *resp_urb = NULL;
 	unsigned char *tiu;
+	int tag;
 	struct scsi_lun slun;
 	int    res, res1;
 
@@ -771,9 +848,11 @@ static int uasp_do_tmf(struct scsi_device *sdev, u8 tmf, u8 ttbm, gfp_t gfp)
 		return -ENOMEM;
 
 	tiu = tmf_urb->transfer_buffer;
-	res = uasp_alloc_resp_urb(&resp_urb, sdev, GET_IU_TAG(tiu), gfp);
+	tag = GET_IU_TAG(tiu);
+	res = uasp_alloc_resp_urb(&resp_urb, sdev, tag, gfp);
 	if (res) {
 		usb_free_urb(tmf_urb);
+		uasp_tag_free(&tpinfo->tag_data, tag);
 		return -ENOMEM;
 	}
 
@@ -811,6 +890,8 @@ static int uasp_do_tmf(struct scsi_device *sdev, u8 tmf, u8 ttbm, gfp_t gfp)
 
 	luinfo->freed_urb = NULL;
 
+	uasp_tag_free(&tpinfo->tag_data, tag);
+
 	return res;
 
  Free_urbs:
@@ -822,55 +903,78 @@ static int uasp_do_tmf(struct scsi_device *sdev, u8 tmf, u8 ttbm, gfp_t gfp)
 	if (res1 != -EINPROGRESS)
 		usb_free_urb(resp_urb);
 
+	uasp_tag_free(&tpinfo->tag_data, tag);
+
 	return res;
 }
 
-static int uasp_er_tmf(struct scsi_cmnd *cmd, u8 tmf, gfp_t gfp)
+static int uasp_abort_task(struct scsi_cmnd *cmd)
 {
+	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
 	struct scsi_device *sdev = cmd->device;
-	int tag;
 	int res;
+	int ttbm;
 
-	if (tmf == TMF_ABORT_TASK || tmf == TMF_QUERY_TASK) {
-		if (sdev->current_cmnd != cmd && cmd->request != NULL)
-			tag = cmd->request->tag + CMD_TAG_OFFS;
-		else
-			tag = CMD_UNTAGGED_TAG;
-	} else {
-		tag = 0;
+	ttbm = uasp_tag_lookup(&tpinfo->tag_data, cmd);
+	if (ttbm < 0) {
+		dev_err(&tpinfo->udev->dev,
+			"cmd: %p is done or was never sent\n", cmd);
+		return FAILED;
 	}
 
-	res = uasp_do_tmf(sdev, tmf, tag, gfp);
+	res = uasp_do_tmf(sdev, TMF_ABORT_TASK, ttbm, GFP_ATOMIC);
 
-	dev_dbg(&SDEV_TPORT_INFO(sdev)->udev->dev,
-		"%s: cmd:%p (0x%02x) tag:%d tmf:0x%02x resp:0x%08x\n",
-		__func__, cmd, cmd->cmnd[0], tag, tmf, res);
+	dev_dbg(&tpinfo->udev->dev,
+		"%s: cmd:%p (0x%02x) tag:%d resp:0x%08x\n",
+		__func__, cmd, cmd->cmnd[0], ttbm, res);
 
 	switch (TMR_RESPONSE_CODE(res)) {
 	case TMR_COMPLETE:
 	case TMR_SUCC:
+		uasp_tag_free(&tpinfo->tag_data, ttbm);
 		return SUCCESS;
 	default:
 		return FAILED;
 	}
 }
 
-static int uasp_abort_cmd(struct scsi_cmnd *cmd)
+static int uasp_lu_reset(struct scsi_cmnd *cmd)
 {
-	return uasp_er_tmf(cmd, TMF_ABORT_TASK, GFP_ATOMIC);
+	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
+	struct uasp_tag_data *td = &tpinfo->tag_data;
+	int res, i = 0;
+
+	res = uasp_do_tmf(cmd->device, TMF_LU_RESET, 0, GFP_ATOMIC);
+
+	while ((i = find_next_bit(td->tag_map, td->num_tags, i))<td->num_tags) {
+		struct scsi_cmnd *xc = uasp_cmd_lookup(td, i);
+
+		if (xc != NULL && xc->device->lun == cmd->device->lun)
+			uasp_tag_free(td, i);
+	}
+
+	dev_dbg(&tpinfo->udev->dev, "%s: %s %s: result: %d\n", __func__,
+		dev_driver_string(&cmd->device->sdev_gendev),
+		dev_name(&cmd->device->sdev_gendev), res);
+
+	return res;
 }
 
-static int uasp_device_reset(struct scsi_cmnd *cmd)
+static int uasp_IT_nexus_reset(struct scsi_cmnd *cmd)
 {
-	return uasp_er_tmf(cmd, TMF_LU_RESET, GFP_ATOMIC);
+	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
+	struct uasp_tag_data *td = &tpinfo->tag_data;
+	int res;
+
+	res = uasp_do_tmf(cmd->device, TMF_IT_NEXUS_RESET, 0, GFP_ATOMIC);
+	uasp_tag_releaseall(td);
+
+	dev_dbg(&tpinfo->udev->dev, "%s: result: %d\n", __func__, res);
+
+	return res;
 }
 
-static int uasp_target_reset(struct scsi_cmnd *cmd)
-{
-	return uasp_er_tmf(cmd, TMF_IT_NEXUS_RESET, GFP_ATOMIC);
-}
-
-static int uasp_bus_reset(struct scsi_cmnd *cmd)
+static int uasp_transport_reset(struct scsi_cmnd *cmd)
 {
 	struct scsi_device *sdev = cmd->device;
 	struct uasp_tport_info *tpinfo = SDEV_TPORT_INFO(sdev);
@@ -880,16 +984,15 @@ static int uasp_bus_reset(struct scsi_cmnd *cmd)
 	res = usb_lock_device_for_reset(udev, tpinfo->iface);
 	if (res == 0) {
 		res = usb_reset_device(udev);
+		uasp_tag_releaseall(&tpinfo->tag_data);
 		usb_unlock_device(udev);
 	} else {
-		dev_err(&udev->dev, "%s: cmd:%p (0x%02x) failed to "
-			"lock dev (%d)\n",
-			__func__, cmd, cmd->cmnd[0], res);
+		dev_err(&udev->dev, "%s: failed to lock dev (%d)\n", __func__,
+			res);
 		return FAILED;
 	}
 
-	dev_dbg(&udev->dev, "%s: cmd:%p (0x%02x) (%d)\n",
-		__func__, cmd, cmd->cmnd[0], res);
+	dev_dbg(&udev->dev, "%s: result: %d\n", __func__, res);
 
 	if (res == 0)
 		return SUCCESS;
@@ -912,7 +1015,7 @@ static int uasp_slave_configure(struct scsi_device *sdev)
 {
 	struct uasp_tport_info *tpinfo = SDEV_TPORT_INFO(sdev);
 
-	scsi_set_tag_type(sdev, MSG_ORDERED_TAG);
+	scsi_set_tag_type(sdev, 0);
 	scsi_activate_tcq(sdev, tpinfo->max_cmds);
 
 	return 0;
@@ -930,10 +1033,10 @@ static struct scsi_host_template uasp_host_template = {
 	.slave_alloc = uasp_slave_alloc,
 	.slave_configure = uasp_slave_configure,
 	.slave_destroy = uasp_slave_destroy,
-	.eh_abort_handler = uasp_abort_cmd,
-	.eh_device_reset_handler = uasp_device_reset,
-	.eh_target_reset_handler = uasp_target_reset,
-	.eh_bus_reset_handler = uasp_bus_reset,
+	.eh_abort_handler = uasp_abort_task,
+	.eh_device_reset_handler = uasp_lu_reset,
+	.eh_target_reset_handler = uasp_IT_nexus_reset,
+	.eh_bus_reset_handler = uasp_transport_reset,
 	.can_queue = 1,
 	.cmd_per_lun = 1,
 	.this_id = -1,
@@ -953,43 +1056,13 @@ static const struct usb_device_id uasp_usb_ids[] = {
 };
 MODULE_DEVICE_TABLE(usb, uasp_usb_ids);
 
-/* We don't have to do this here if Linux allowed tag usage for
- * anything other than commands, i.e. TMFs which also use tags.
- */
-static int uasp_set_max_cmds(struct uasp_tport_info *tpinfo)
-{
-	int mc;
-
-	/* Define the following cmd tag assignment:
-	 * [1:TMF, 2:untagged, [3, num_streams]:tagged].
-	 * Thus there are num_streams-3+1 = num_streams-2 tags
-	 * for tagged commands. Report this number to the SCSI Core
-	 * as the number of maximum commands we can queue, thus
-	 * giving us a tag range [0, num_streams-3], which we
-	 * offset by 3 (CMD_TAG_OFFS).
-	 */
-	mc = tpinfo->num_streams - 2;
-	if (mc <= 0) {
-		/* Pathological case--perhaps fail discovery?
-		 */
-		dev_notice(&tpinfo->udev->dev,
-			   "device supports too few streams (%d)\n",
-			   tpinfo->num_streams);
-		mc = max(1, tpinfo->num_streams - 1);
-	}
-
-	tpinfo->max_cmds = mc;
-
-	return 0;
-}
-
 static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 {
 	struct usb_device *udev = tpinfo->udev;
 	struct usb_interface *iface = tpinfo->iface;
 	struct usb_host_endpoint *epa = iface->cur_altsetting->endpoint;
 	int numep = iface->cur_altsetting->desc.bNumEndpoints;
-	int i;
+	int i, res, num_tags;
 
 	for (i = 0; i < numep; i++) {
 		unsigned char *desc = epa[i].extra;
@@ -1060,16 +1133,24 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 				tpinfo->num_streams);
 			return -ENODEV;
 		}
-
-		uasp_set_max_cmds(tpinfo);
+		num_tags = tpinfo->num_streams;
 		dev_info(&udev->dev, "streams:%d allocated streams:%d\n",
 			 tpinfo->max_streams, tpinfo->num_streams);
 	} else {
 		tpinfo->use_streams = 0;
-		tpinfo->max_cmds = 32; /* Be conservative */
+		num_tags = 32;
 	}
 
-	return 0;
+	/* Reserve a tag for TMF per target port. Ideally we'd reserve
+	 * a tag for TMF per LU, not per target port, but if the
+	 * number of Logical Units (say 33) is greater than the number
+	 * of streams supported (say 32) then there would be no tags
+	 * left for commands.
+	 */
+	tpinfo->max_cmds = num_tags - 1;
+	res = uasp_alloc_tags(&tpinfo->tag_data, 1, num_tags, GFP_ATOMIC);
+
+	return res;
 }
 
 static int uasp_set_alternate(struct usb_interface *iface)
@@ -1185,6 +1266,7 @@ static void uasp_disconnect(struct usb_interface *iface)
 	scsi_remove_host(shost);
 	usb_free_streams(iface, &tpinfo->eps[FIRST_EP_WSTREAMS],
 			 NUM_EPS_WSTREAMS, GFP_ATOMIC);
+	uasp_free_tags(&tpinfo->tag_data);
 
 	kfree(tpinfo);
 }

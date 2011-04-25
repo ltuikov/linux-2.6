@@ -270,7 +270,6 @@ static void uasp_sense(struct urb *urb, struct scsi_cmnd *cmd, u16 tag)
 {
 	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
 	unsigned char *iu = urb->transfer_buffer;
-	struct scsi_device *sdev = cmd->device;
 	int id = GET_IU_ID(iu);
 
 	if (id == IU_RESP) {
@@ -280,7 +279,7 @@ static void uasp_sense(struct urb *urb, struct scsi_cmnd *cmd, u16 tag)
 			cmd->result = DID_ABORT << 16;
 		else {
 			cmd->result = DID_ERROR << 16;
-			dev_err(&SDEV_TPORT_INFO(sdev)->udev->dev,
+			dev_err(&urb->dev->dev,
 				"%s: doesn't know how to handle TMR 0x%08x\n",
 				__func__, resp);
 		}
@@ -299,7 +298,7 @@ static void uasp_sense(struct urb *urb, struct scsi_cmnd *cmd, u16 tag)
 				slen = min(urb->actual_length - IU_SENSE_LEN,
 					   (unsigned) SCSI_SENSE_BUFFERSIZE);
 
-				dev_err(&SDEV_TPORT_INFO(sdev)->udev->dev,
+				dev_err(&urb->dev->dev,
 					"%s: short SENSE IU by %d bytes, "
 					"using %d/%d bytes of sense data\n",
 					__func__,
@@ -311,13 +310,13 @@ static void uasp_sense(struct urb *urb, struct scsi_cmnd *cmd, u16 tag)
 	} else {
 		/* Impossible! */
 		cmd->result = DID_ERROR << 16;
-		dev_err(&SDEV_TPORT_INFO(sdev)->udev->dev,
+		dev_err(&urb->dev->dev,
 			"%s: called with IU ID 0x%02x\n", __func__, id);
 	}
 
-	dev_dbg(&SDEV_TPORT_INFO(sdev)->udev->dev,
-		"%s: completing %p result 0x%02x\n",
-		__func__, cmd, cmd->result);
+	dev_dbg(&urb->dev->dev,
+		"%s: cmd:%p tag:%d result:0x%02x\n",
+		__func__, cmd, tag, cmd->result);
 
 	cmd->scsi_done(cmd);
 	usb_free_urb(urb);
@@ -740,7 +739,7 @@ static int uasp_queuecommand_lck(struct scsi_cmnd *cmd,
 		goto Out_err;
 	}
 	
-	dev_dbg(&UASP_TPORT_INFO(cmd)->udev->dev,
+	dev_dbg(&tpinfo->udev->dev,
 		"%s: cmd:%p (0x%02x) tag:%d lun:%d res:%d\n",
 		__func__, cmd, cmd->cmnd[0], cmdinfo->tag,
 		cmd->device->lun, res);

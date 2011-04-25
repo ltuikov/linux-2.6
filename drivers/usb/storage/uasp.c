@@ -942,11 +942,13 @@ static int uasp_lu_reset(struct scsi_cmnd *cmd)
 {
 	struct uasp_tport_info *tpinfo = UASP_TPORT_INFO(cmd);
 	struct uasp_tag_data *td = &tpinfo->tag_data;
-	int res, i = 0;
+	int res, i;
 
 	res = uasp_do_tmf(cmd->device, TMF_LU_RESET, 0, GFP_ATOMIC);
 
-	while ((i = find_next_bit(td->tag_map, td->num_tags, i))<td->num_tags) {
+	for (i = 0;
+	     (i = find_next_bit(td->tag_map, td->num_tags, i)) < td->num_tags;
+	     i++) {
 		struct scsi_cmnd *xc = uasp_cmd_lookup(td, i);
 
 		if (xc != NULL && xc->device->lun == cmd->device->lun)

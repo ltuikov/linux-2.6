@@ -75,6 +75,9 @@
 #define IDE4_MAJOR		56
 #define IDE5_MAJOR		57
 
+#define ABUSE_MAJOR		60
+#define ABUSECTL_MAJOR		61
+
 #define SCSI_DISK1_MAJOR	65
 #define SCSI_DISK2_MAJOR	66
 #define SCSI_DISK3_MAJOR	67

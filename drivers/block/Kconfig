@@ -213,6 +213,21 @@ config BLK_DEV_COW_COMMON
 	bool
 	default BLK_DEV_UBD
 
+config BLK_DEV_ABUSE
+	tristate "ABUSE user space block device driver"
+	---help---
+	  This driver allows block devices to be implemented in userspace.
+	  It is completely useless and is a massive abuse of the layering
+	  of the kernel.  Unless of course you write a userspace driver
+	  for it, in which case you can create arbitrary block devices.
+
+	  Just don't try to swap over it.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called abuse.
+
+	  Most users will answer N here.
+
 config BLK_DEV_LOOP
 	tristate "Loopback device support"
 	---help---

@@ -49,9 +49,10 @@ struct abuse_device *abuse_get_dev(int dev)
 	struct abuse_device *ab = NULL;
 
 	mutex_lock(&abuse_devices_mutex);
-	list_for_each_entry(ab, &abuse_devices, ab_list) 
+	list_for_each_entry(ab, &abuse_devices, ab_list) {
 		if (ab->ab_number == dev)
 			break;
+	}
 	mutex_unlock(&abuse_devices_mutex);
 	return ab;
 }
@@ -65,8 +66,9 @@ static void abuse_add_bio(struct abuse_device *ab, struct bio *bio)
 	if (ab->ab_biotail) {
 		ab->ab_biotail->bi_next = bio;
 		ab->ab_biotail = bio;
-	} else
+	} else {
 		ab->ab_bio = ab->ab_biotail = bio;
+	}
 	ab->ab_queue_size++;
 }
 
@@ -84,8 +86,9 @@ static inline struct bio *abuse_find_bio(struct abuse_device *ab,
 	struct bio *bio;
 	struct bio **pprev = &ab->ab_bio;
 
-	while ((bio = *pprev) != 0 && match && bio != match)
+	while ((bio = *pprev) != 0 && match && bio != match) {
 		pprev = &bio->bi_next;
+	}
 
 	if (bio) {
 		if (bio == ab->ab_biotail) {
@@ -99,6 +102,7 @@ static inline struct bio *abuse_find_bio(struct abuse_device *ab,
 	}
 
 	printk("abuse_find_bio %p %p\n", bio, match);
+
 	return bio;
 }
 
@@ -120,12 +124,13 @@ static int abuse_make_request(struct request_queue *q, struct bio *old_bio)
 	abuse_add_bio(ab, old_bio);
 	wake_up(&ab->ab_event);
 	spin_unlock_irq(&ab->ab_lock);
-	return 0;
 
+	return 0;
 out:
 	ab->ab_errors++;
 	spin_unlock_irq(&ab->ab_lock);
 	bio_io_error(old_bio);
+
 	return 0;
 }
 
@@ -166,6 +171,7 @@ static int abuse_reset(struct abuse_device *ab)
 	ab->ab_size = 0;
 	ab->ab_max_queue = 0;
 	set_capacity(ab->ab_disk, 0);
+
 	if (ab->ab_device) {
 		bd_set_size(ab->ab_device, 0);
 		invalidate_bdev(ab->ab_device);
@@ -175,6 +181,7 @@ static int abuse_reset(struct abuse_device *ab)
 		ab->ab_device = NULL;
 		module_put(THIS_MODULE);
 	}
+
 	return 0;
 }
 
@@ -258,6 +265,7 @@ abuse_get_status_int(struct abuse_device *ab, struct abuse_info *info)
 	info->ab_queue_size = ab->ab_queue_size;
 	info->ab_errors = ab->ab_errors;
 	info->ab_max_vecs = BIO_MAX_PAGES;
+
 	return 0;
 }
 
@@ -269,6 +277,7 @@ abuse_set_status(struct abuse_device *ab, struct block_device *bdev,
 
 	if (copy_from_user(&info, arg, sizeof (struct abuse_info)))
 		return -EFAULT;
+
 	return abuse_set_status_int(ab, bdev, &info);
 }
 
@@ -326,6 +335,7 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 
 	if (copy_to_user(arg, &xfr, sizeof(xfr)))
 		return -EFAULT;
+
 	if (xfr.ab_transfer_address &&
 		copy_to_user((void *)xfr.ab_transfer_address, ab->ab_xfer,
 			     xfr.ab_vec_count * sizeof(ab->ab_xfer[0])))
@@ -407,8 +417,7 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	/*
 	 * You made it this far?  It's time for the third movement.
 	 */
-	bio_for_each_segment(bvec, bio, i)
-	{
+	bio_for_each_segment(bvec, bio, i) {
 		int ret;
 		void *kaddr = kmap(bvec->bv_page);
 
@@ -465,6 +474,7 @@ static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		err = -EINVAL;
 	}
 	mutex_unlock(&ab->ab_ctl_mutex);
+
 	return err;
 }
 
@@ -493,6 +503,7 @@ static int abctl_open(struct inode *inode, struct file *filp)
 		return -ENODEV;
 
 	filp->private_data = ab;
+
 	return 0;
 }
 
@@ -541,7 +552,7 @@ MODULE_PARM_DESC(max_part, "Maximum number of partitions per abuse device");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_BLOCKDEV_MAJOR(ABUSE_MAJOR);
 
-static struct abuse_device *abuse_alloc(int i)
+static struct abuse_device *abuse_alloc(int devi)
 {
 	struct abuse_device *ab;
 	struct gendisk *disk;
@@ -563,11 +574,11 @@ static struct abuse_device *abuse_alloc(int i)
 		goto out_free_queue;
 	
 	disk->major		= ABUSE_MAJOR;
-	disk->first_minor	= i << dev_shift;
+	disk->first_minor	= devi << dev_shift;
 	disk->fops		= &ab_fops;
 	disk->private_data	= ab;
 	disk->queue		= ab->ab_queue;
-	sprintf(disk->disk_name, "abuse%d", i);
+	sprintf(disk->disk_name, "abuse%d", devi);
 
 	cdev = ab->ab_cdev = cdev_alloc();
 	if (!cdev)
@@ -576,18 +587,18 @@ static struct abuse_device *abuse_alloc(int i)
 	cdev->owner = THIS_MODULE;
 	cdev->ops = &abctl_fops;
 
-	if (cdev_add(ab->ab_cdev, MKDEV(ABUSECTL_MAJOR, i), 1) != 0)
+	if (cdev_add(ab->ab_cdev, MKDEV(ABUSECTL_MAJOR, devi), 1) != 0)
 		goto out_free_cdev;
 	
-	device = device_create(abuse_class, NULL, MKDEV(ABUSECTL_MAJOR, i), ab,
-				"abctl%d", i);
+	device = device_create(abuse_class, NULL, MKDEV(ABUSECTL_MAJOR, devi),
+			       ab, "abctl%d", devi);
 	if (IS_ERR(device)) {
 		printk(KERN_ERR "abuse_alloc: device_create failed\n");
 		goto out_free_cdev;
 	}
 	
 	mutex_init(&ab->ab_ctl_mutex);
-	ab->ab_number		= i;
+	ab->ab_number = devi;
 	init_waitqueue_head(&ab->ab_event);
 	spin_lock_init(&ab->ab_lock);
 
@@ -615,19 +626,21 @@ static void abuse_free(struct abuse_device *ab)
 	kfree(ab);
 }
 
-static struct abuse_device *abuse_init_one(int i)
+static struct abuse_device *abuse_init_one(int devi)
 {
 	struct abuse_device *ab;
 
-	list_for_each_entry(ab, &abuse_devices, ab_list) 
-		if (ab->ab_number == i)
+	list_for_each_entry(ab, &abuse_devices, ab_list) {
+		if (ab->ab_number == devi)
 			return ab;
+	}
 
-	ab = abuse_alloc(i);
+	ab = abuse_alloc(devi);
 	if (ab) {
 		add_disk(ab->ab_disk);
 		list_add_tail(&ab->ab_list, &abuse_devices);
 	}
+
 	return ab;
 }
 
@@ -653,7 +666,7 @@ static struct kobject *abuse_probe(dev_t dev, int *part, void *data)
 
 static int __init abuse_init(void)
 {
-	int i, nr, err;
+	int devi, nr, err;
 	unsigned long range;
 	struct abuse_device *ab, *next;
 
@@ -704,8 +717,8 @@ static int __init abuse_init(void)
 	}
 
 	err = -ENOMEM;
-	for (i = 0; i < nr; i++) {
-		ab = abuse_alloc(i);
+	for (devi = 0; devi < nr; devi++) {
+		ab = abuse_alloc(devi);
 		if (!ab) {
 			printk(KERN_INFO "abuse: out of memory\n");
 			goto free_devices;
@@ -715,8 +728,9 @@ static int __init abuse_init(void)
 
 	/* point of no return */
 
-	list_for_each_entry(ab, &abuse_devices, ab_list)
+	list_for_each_entry(ab, &abuse_devices, ab_list) {
 		add_disk(ab->ab_disk);
+	}
 
 	blk_register_region(MKDEV(ABUSE_MAJOR, 0), range,
 				  THIS_MODULE, abuse_probe, NULL, NULL);
@@ -725,8 +739,9 @@ static int __init abuse_init(void)
 	return 0;
 
 free_devices:
-	list_for_each_entry_safe(ab, next, &abuse_devices, ab_list)
+	list_for_each_entry_safe(ab, next, &abuse_devices, ab_list) {
 		abuse_free(ab);
+	}
 unregister_chr:
 	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range);
 unregister_blk:
@@ -741,8 +756,10 @@ static void __exit abuse_exit(void)
 
 	range = max_abuse ? max_abuse :  1UL << (MINORBITS - dev_shift);
 
-	list_for_each_entry_safe(ab, next, &abuse_devices, ab_list)
+	list_for_each_entry_safe(ab, next, &abuse_devices, ab_list) {
 		abuse_del_one(ab);
+	}
+
 	class_destroy(abuse_class);
 	blk_unregister_region(MKDEV(ABUSE_MAJOR, 0), range);
 	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range);
@@ -756,6 +773,7 @@ module_exit(abuse_exit);
 static int __init max_abuse_setup(char *str)
 {
 	max_abuse = simple_strtol(str, NULL, 0);
+
 	return 1;
 }
 

@@ -17,6 +17,13 @@ enum {
 };
 
 #include <linux/types.h>	/* for __u64 */
+#include <linux/ioctl.h>
+
+/*
+ * ab_size: size of the device in bytes
+ * ab_blocksize: block size of the device in bytes
+ * ab_max_queue: maximum size of the queue (max number of pending bio's)
+ */
 
 struct abuse_info {
 	__u64		   ab_device;			/* ioctl r/o */
@@ -29,17 +36,6 @@ struct abuse_info {
 	__u32		   ab_errors;			/* ioctl r/o */
 	__u32		   ab_max_vecs;			/* ioctl r/o */
 };
-
-/*
- * IOCTL commands 
- */
-
-#define ABUSE_GET_STATUS	0x4120
-#define ABUSE_SET_STATUS	0x4121
-#define ABUSE_SET_POLL		0x4122
-#define ABUSE_RESET		0x4123
-#define ABUSE_GET_BIO		0x4124
-#define ABUSE_PUT_BIO		0x4125
 
 struct abuse_vec {
 	__u64			ab_address;
@@ -74,6 +70,16 @@ enum {
 	ABUSE_RESULT_MEDIA_FAILURE	= 1,
 	ABUSE_RESULT_DEVICE_FAILURE	= 2
 };
+
+/*
+ * IOCTL commands
+ */
+
+#define ABUSE_GET_STATUS	_IOR('A', 0, struct abuse_info)
+#define ABUSE_SET_STATUS	_IOW('A', 1, struct abuse_info)
+#define ABUSE_RESET		_IO( 'A', 2)
+#define ABUSE_GET_BIO		_IOR('A', 3, struct abuse_xfr_hdr)
+#define ABUSE_PUT_BIO		_IOW('A', 4, struct abuse_xfr_hdr)
 
 #ifdef __KERNEL__
 #include <linux/bio.h>

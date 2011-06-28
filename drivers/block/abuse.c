@@ -30,7 +30,6 @@
 #include <linux/major.h>
 #include <linux/blkdev.h>
 #include <linux/init.h>
-#include <linux/smp_lock.h>
 #include <linux/buffer_head.h>		/* for invalidate_bdev() */
 #include <linux/cdev.h>
 #include <linux/poll.h>
@@ -148,14 +147,6 @@ static void abuse_flush_bio(struct abuse_device *ab)
 	}
 }
 
-/*
- * kick off io on the underlying address space
- */
-static void abuse_unplug(struct request_queue *q)
-{
-	queue_flag_clear_unlocked(QUEUE_FLAG_PLUGGED, q);
-}
-
 static inline int is_abuse_device(struct file *file)
 {
 	struct inode *i = file->f_mapping->host;
@@ -169,7 +160,6 @@ static int abuse_reset(struct abuse_device *ab)
 		return -EINVAL;
 
 	abuse_flush_bio(ab);
-	ab->ab_queue->unplug_fn = NULL;
 	ab->ab_flags = 0;
 	ab->ab_errors = 0;
 	ab->ab_blocksize = 0;
@@ -227,7 +217,7 @@ abuse_set_status_int(struct abuse_device *ab, struct block_device *bdev,
 			err = PTR_ERR(bdev);
 			return err;
 		}
-		err = blkdev_get(bdev, FMODE_READ);
+		err = blkdev_get(bdev, FMODE_READ, ab);
 		if (err) {
 			bdput(bdev);
 			return err;
@@ -238,7 +228,6 @@ abuse_set_status_int(struct abuse_device *ab, struct block_device *bdev,
 	ab->ab_device = bdev;
 	blk_queue_make_request(ab->ab_queue, abuse_make_request);
 	ab->ab_queue->queuedata = ab;
-	ab->ab_queue->unplug_fn = abuse_unplug;
 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, ab->ab_queue);
 
 	ab->ab_size = info->ab_size;
@@ -248,9 +237,9 @@ abuse_set_status_int(struct abuse_device *ab, struct block_device *bdev,
 
 	set_capacity(ab->ab_disk, size);
 	set_device_ro(bdev, (ab->ab_flags & ABUSE_FLAGS_READ_ONLY) != 0);
-	set_capacity(ab->ab_disk, size);
 	bd_set_size(bdev, size << 9);
 	set_blocksize(bdev, ab->ab_blocksize);
+
 	if (max_part > 0)
 		ioctl_by_bdev(bdev, BLKRRPART, 0);
 
@@ -320,7 +309,7 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	if (bio) {
 		int i;
 		xfr.ab_sector = bio->bi_sector;
-		xfr.ab_command = (bio->bi_rw & BIO_RW);
+		xfr.ab_command = (bio->bi_rw & REQ_WRITE);
 		xfr.ab_vec_count = bio->bi_vcnt;
 		for (i = 0; i < bio->bi_vcnt; i++) {
 			ab->ab_xfer[i].ab_len = bio->bi_io_vec[i].bv_len;
@@ -388,11 +377,11 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	 */
 	if (bio->bi_sector != xfr.ab_sector ||
 	    bio->bi_vcnt != xfr.ab_vec_count ||
-	    (bio->bi_rw & BIO_RW) != xfr.ab_command) {
+	    (bio->bi_rw & REQ_WRITE) != xfr.ab_command) {
 	    	abuse_add_bio_unlocked(ab, bio);
 		return -EINVAL;
 	}
-	read = !(bio->bi_rw & BIO_RW);
+	read = !(bio->bi_rw & REQ_WRITE);
 	
 	/*
 	 * Now handle individual failures that don't affect other I/Os.
@@ -445,8 +434,7 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	return 0;
 }
 
-static int abctl_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
-	unsigned long arg)
+static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct abuse_device *ab = filp->private_data;
 	int err;
@@ -511,6 +499,7 @@ static int abctl_open(struct inode *inode, struct file *filp)
 static int abctl_release(struct inode *inode, struct file *filp)
 {
 	struct abuse_device *ab = filp->private_data;
+
 	if (!ab)
 		return -ENODEV;
 
@@ -537,7 +526,7 @@ static struct file_operations abctl_fops = {
 	.owner =	THIS_MODULE,
 	.open =		abctl_open,
 	.release =	abctl_release,
-	.ioctl =	abctl_ioctl,
+	.unlocked_ioctl = abctl_ioctl,
 	.poll =		abctl_poll,
 };
 
@@ -566,6 +555,8 @@ static struct abuse_device *abuse_alloc(int i)
 	ab->ab_queue = blk_alloc_queue(GFP_KERNEL);
 	if (!ab->ab_queue)
 		goto out_free_dev;
+
+	blk_set_default_limits(&ab->ab_queue->limits);
 
 	disk = ab->ab_disk = alloc_disk(num_minors);
 	if (!disk)

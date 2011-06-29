@@ -18,7 +18,14 @@
  * Copyright (c) 2009 by Zachary Amsden.  Redistribution of this file is
  * permitted under the GNU General Public License.
  *
+ * Copyright Luben Tuikov, 2011
  */
+
+#ifdef CONFIG_BLK_DEV_ABUSE_DEBUG
+#if !defined(DEBUG) && !defined(CONFIG_DYNAMIC_DEBUG)
+#define DEBUG
+#endif
+#endif
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -33,9 +40,46 @@
 #include <linux/buffer_head.h>		/* for invalidate_bdev() */
 #include <linux/cdev.h>
 #include <linux/poll.h>
+#include <linux/bio.h>
+#include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/abuse.h>
-
 #include <asm/uaccess.h>
+
+struct abuse_device {
+	int		ab_number;
+	int		ab_refcnt;
+	loff_t		ab_size;
+	int		ab_flags;
+	int		ab_queue_size;
+	int		ab_max_queue;
+	int		ab_errors;
+
+	struct device   *device;
+
+	struct block_device *ab_device;
+	unsigned	ab_blocksize;
+
+	gfp_t		old_gfp_mask;
+
+	spinlock_t		ab_lock;
+	struct bio 		*ab_bio;
+	struct bio		*ab_biotail;
+	struct mutex		ab_ctl_mutex;
+	wait_queue_head_t	ab_event;
+
+	struct request_queue	*ab_queue;
+	struct gendisk		*ab_disk;
+	struct cdev		*ab_cdev;
+	struct list_head	ab_list;
+
+	/* user xfer area */
+	struct abuse_vec	ab_xfer[BIO_MAX_PAGES];
+};
+
+#define AB_BLK_DEV(__AB)	((__AB)->ab_device)
+#define AB_GENDISK(__AB)	((__AB)->ab_disk)
+#define AB_CDEV(__AB)		((__AB)->ab_cdev)
 
 static LIST_HEAD(abuse_devices);
 static DEFINE_MUTEX(abuse_devices_mutex);
@@ -62,7 +106,7 @@ struct abuse_device *abuse_get_dev(int dev)
  */
 static void abuse_add_bio(struct abuse_device *ab, struct bio *bio)
 {
-	printk("abuse_add_bio %p\n", bio);
+	dev_dbg(ab->device, "%s: bio:%p\n", __func__, bio);
 	if (ab->ab_biotail) {
 		ab->ab_biotail->bi_next = bio;
 		ab->ab_biotail = bio;
@@ -101,7 +145,7 @@ static inline struct bio *abuse_find_bio(struct abuse_device *ab,
 		ab->ab_queue_size--;
 	}
 
-	printk("abuse_find_bio %p %p\n", bio, match);
+	dev_dbg(ab->device, "%s: bio:%p match:%p\n", __func__, bio, match);
 
 	return bio;
 }
@@ -257,6 +301,7 @@ static int
 abuse_get_status_int(struct abuse_device *ab, struct abuse_info *info)
 {
 	memset(info, 0, sizeof(*info));
+
 	info->ab_size = ab->ab_size;
 	info->ab_number = ab->ab_number;
 	info->ab_flags = ab->ab_flags;
@@ -593,12 +638,13 @@ static struct abuse_device *abuse_alloc(int devi)
 	device = device_create(abuse_class, NULL, MKDEV(ABUSECTL_MAJOR, devi),
 			       ab, "abctl%d", devi);
 	if (IS_ERR(device)) {
-		printk(KERN_ERR "abuse_alloc: device_create failed\n");
+		pr_err("%s: device_create:%ld\n", __func__, PTR_ERR(device));
 		goto out_free_cdev;
 	}
 	
 	mutex_init(&ab->ab_ctl_mutex);
 	ab->ab_number = devi;
+	ab->device = device;
 	init_waitqueue_head(&ab->ab_event);
 	spin_lock_init(&ab->ab_lock);
 
@@ -698,21 +744,22 @@ static int __init abuse_init(void)
 		range = 1UL << (MINORBITS - dev_shift);
 	}
 
-	err = -EIO;
-	if (register_blkdev(ABUSE_MAJOR, "abuse")) {
-		printk("abuse: register_blkdev failed!\n");
-		return err;
+	err = register_blkdev(ABUSE_MAJOR, "abuse");
+	if (err) {
+		pr_err("%s: register_blkdev:%d\n", __func__, err);
+		return err; 	  /* -EIO originally */
 	}
 	
 	err = register_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range, "abuse");
 	if (err) {
-		printk("abuse: register_chrdev_region failed!\n");
+		pr_err("%s: register_chrdev_region:%d\n", __func__, err);
 		goto unregister_blk;
 	}
 
 	abuse_class = class_create(THIS_MODULE, "abuse");
 	if (IS_ERR(abuse_class)) {
 		err = PTR_ERR(abuse_class);
+		pr_err("%s: class_create:%d\n", __func__, err);
 		goto unregister_chr;
 	}
 
@@ -720,7 +767,7 @@ static int __init abuse_init(void)
 	for (devi = 0; devi < nr; devi++) {
 		ab = abuse_alloc(devi);
 		if (!ab) {
-			printk(KERN_INFO "abuse: out of memory\n");
+			pr_err("%s: out of memory\n", __func__);
 			goto free_devices;
 		}
 		list_add_tail(&ab->ab_list, &abuse_devices);
@@ -735,7 +782,7 @@ static int __init abuse_init(void)
 	blk_register_region(MKDEV(ABUSE_MAJOR, 0), range,
 				  THIS_MODULE, abuse_probe, NULL, NULL);
 
-	printk(KERN_INFO "abuse: module loaded\n");
+	pr_info("abuse: module loaded\n");
 	return 0;
 
 free_devices:

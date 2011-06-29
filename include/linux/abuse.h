@@ -54,7 +54,7 @@ struct abuse_xfr_hdr {
 };
 
 /*
- * ab_commnd codes 
+ * ab_command codes
  */
 enum {
 	ABUSE_READ			= 0,
@@ -80,42 +80,5 @@ enum {
 #define ABUSE_RESET		_IO( 'A', 2)
 #define ABUSE_GET_BIO		_IOR('A', 3, struct abuse_xfr_hdr)
 #define ABUSE_PUT_BIO		_IOW('A', 4, struct abuse_xfr_hdr)
-
-#ifdef __KERNEL__
-#include <linux/bio.h>
-#include <linux/blkdev.h>
-#include <linux/spinlock.h>
-#include <linux/mutex.h>
-
-struct abuse_device {
-	int		ab_number;
-	int		ab_refcnt;
-	loff_t		ab_size;
-	int		ab_flags;
-	int		ab_queue_size;
-	int		ab_max_queue;
-	int		ab_errors;
-
-	struct block_device *ab_device;
-	unsigned	ab_blocksize;
-
-	gfp_t		old_gfp_mask;
-
-	spinlock_t		ab_lock;
-	struct bio 		*ab_bio;
-	struct bio		*ab_biotail;
-	struct mutex		ab_ctl_mutex;
-	wait_queue_head_t	ab_event;
-
-	struct request_queue	*ab_queue;
-	struct gendisk		*ab_disk;
-	struct cdev		*ab_cdev;
-	struct list_head	ab_list;
-
-	/* user xfer area */
-	struct abuse_vec	ab_xfer[BIO_MAX_PAGES];
-};
-
-#endif /* __KERNEL__ */
 
 #endif

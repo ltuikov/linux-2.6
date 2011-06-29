@@ -228,6 +228,14 @@ config BLK_DEV_ABUSE
 
 	  Most users will answer N here.
 
+config BLK_DEV_ABUSE_DEBUG
+       bool "Compile the abuse driver in debug mode"
+       depends on BLK_DEV_ABUSE
+       ---help---
+	Compiles the abuse driver in debug mode.
+
+	If unsure say 'N'.
+
 config BLK_DEV_LOOP
 	tristate "Loopback device support"
 	---help---

@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <poll.h>
-#include "include/linux/abuse.h"
+#include "abuse.h"
 
 void usage(void)
 {

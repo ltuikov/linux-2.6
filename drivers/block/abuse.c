@@ -46,6 +46,10 @@
 #include <linux/abuse.h>
 #include <asm/uaccess.h>
 
+/* Default number of devices to create.
+ */
+#define MAX_ABUSE_DEV_DEF	8
+
 struct abuse_device {
 	int		ab_number;
 	int		ab_refcnt;
@@ -740,8 +744,8 @@ static int __init abuse_init(void)
 		nr = max_abuse;
 		range = max_abuse;
 	} else {
-		nr = 8;
-		range = 1UL << (MINORBITS - dev_shift);
+		nr = MAX_ABUSE_DEV_DEF;
+		range = MAX_ABUSE_DEV_DEF;
 	}
 
 	err = register_blkdev(ABUSE_MAJOR, "abuse");
@@ -749,12 +753,15 @@ static int __init abuse_init(void)
 		pr_err("%s: register_blkdev:%d\n", __func__, err);
 		return err; 	  /* -EIO originally */
 	}
+	pr_info("abuse: registered blkdev major %d\n", ABUSE_MAJOR);
 	
 	err = register_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range, "abuse");
 	if (err) {
 		pr_err("%s: register_chrdev_region:%d\n", __func__, err);
 		goto unregister_blk;
 	}
+	pr_info("abuse: registered chrdev major %d, range %ld\n",
+		ABUSECTL_MAJOR, range);
 
 	abuse_class = class_create(THIS_MODULE, "abuse");
 	if (IS_ERR(abuse_class)) {
@@ -811,6 +818,7 @@ static void __exit abuse_exit(void)
 	blk_unregister_region(MKDEV(ABUSE_MAJOR, 0), range);
 	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range);
 	unregister_blkdev(ABUSE_MAJOR, "abuse");
+	pr_info("abuse: module unloaded\n");
 }
 
 module_init(abuse_init);

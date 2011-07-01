@@ -3,6 +3,8 @@ ABUSE_H = ../../include/linux/abuse.h
 ABUSE_HEADER_FILE = $(notdir $(ABUSE_H))
 ABUSECTL = abusectl
 
+CFLAGS += -Wall -Wextra
+
 $(ABUSECTL): $(ABUSE_HEADER_FILE)
 
 $(ABUSE_HEADER_FILE):

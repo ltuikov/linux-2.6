@@ -4,11 +4,15 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <ctype.h>
 #include <poll.h>
 
 #include "abuse.h"
+
+#define __unused	__attribute__ ((unused))
 
 /* LT: I chose not to export ABUSE_FLAGS_RECONNECT. If the server
  * wants to reconnect, then it can open the file descriptor, get the
@@ -55,6 +59,7 @@ static int get_number(const int argc, char *argv[], int ii, long long *val)
 	if (ii >= argc || *argv[ii] == '\0') {
 		fprintf(stderr, "%s: %s: missing argument\n", prog,
 			argv[ii-1]);
+		return -1;
 	} else {
 		char *ep;
 
@@ -82,6 +87,7 @@ static int get_number(const int argc, char *argv[], int ii, long long *val)
 	}
 }
 
+#if 0
 static void print_opts(struct abuse_opts *opts)
 {
 	fprintf(stderr, "%s: op:%d dev:%s size:%lld "
@@ -90,6 +96,7 @@ static void print_opts(struct abuse_opts *opts)
 		opts->device_size, opts->block_size, opts->queue_size,
 		opts->read_only);
 }
+#endif
 
 static int get_opts(const int argc, char *argv[], struct abuse_opts *opts)
 {
@@ -146,7 +153,7 @@ static void usage(struct abuse_opts *opts)
 	       "  --server - act as a server getting and putting bios\n"
 	       "  --setup  - setup the device parameters\n"
 	       "And <args> is one of:\n"
-	       "  --size <N> - device size, suffix [,K,M,G], default: %ld\n"
+	       "  --size <N> - device size, suffix [,K,M,G], default: %llu\n"
 	       "  --bs <N>   - block size, suffix [,K], default: %d\n"
 	       "  --qs <N>   - queue size, max number of bio's pending, "
 	       "default: %d\n"
@@ -226,7 +233,7 @@ void do_setup(int fd, struct abuse_opts *opts)
 }
 
 static void ab_getbio(int fd, struct abuse_xfr_hdr *hdr,
-	       struct abuse_vec *xfr, int count)
+	       struct abuse_vec *xfr, int count __unused)
 {
 	int res, ii;
 
@@ -244,15 +251,14 @@ static void ab_getbio(int fd, struct abuse_xfr_hdr *hdr,
 	       hdr->ab_command == ABUSE_READ ? "READ" : "WRITE",
 	       hdr->ab_sector, hdr->ab_vec_count);
 
-	for (ii = 0; ii < hdr->ab_vec_count; ii++) {
-		printf(" [%d]: len:%10lld offs:0x%llx\n", ii, xfr[ii].ab_len,
+	for (ii = 0; ii < (int) hdr->ab_vec_count; ii++) {
+		printf(" [%d]: len:%10u offs:0x%x\n", ii, xfr[ii].ab_len,
 		       xfr[ii].ab_offset);
 	}
 }
 
 void do_getbio(int fd)
 {
-	int res, i;
 	struct abuse_xfr_hdr hdr;
 	struct abuse_vec xfr[512];
 
@@ -261,15 +267,15 @@ void do_getbio(int fd)
 
 void do_putbio(int fd)
 {
-	int res, i;
+	int res, ii;
 	struct abuse_xfr_hdr hdr;
 	struct abuse_vec xfr[512];
 
 	ab_getbio(fd, &hdr, xfr, 512);
 
-	for (i = 0; i < hdr.ab_vec_count; i++) {
-		xfr[i].ab_address = (__u64)malloc(xfr[i].ab_len);
-		if (xfr[i].ab_address == 0) {
+	for (ii = 0; ii < (int) hdr.ab_vec_count; ii++) {
+		xfr[ii].ab_address = (__u64)malloc(xfr[ii].ab_len);
+		if (xfr[ii].ab_address == 0) {
 			hdr.ab_result = ABUSE_RESULT_MEDIA_FAILURE;
 			break;
 		}
@@ -282,8 +288,8 @@ void do_putbio(int fd)
 		exit(res);
 	}
 
-	for (i = 0; i < hdr.ab_vec_count; i++) {
-		free((void *)xfr[i].ab_address);
+	for (ii = 0; ii < (int) hdr.ab_vec_count; ii++) {
+		free((void *)xfr[ii].ab_address);
 	}
 }
 
@@ -306,7 +312,7 @@ void do_poll(int fd)
 		exit(res);
 	}
 
-	printf("%s: poll: %d revents:0x%lx\n", res, fds.revents);
+	printf("%s: poll: %d revents:0x%x\n", prog, res, fds.revents);
 }
 
 int main(int argc, char *argv[])

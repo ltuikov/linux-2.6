@@ -521,6 +521,7 @@ static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	default:
 		err = -EINVAL;
+		break;
 	}
 	mutex_unlock(&ab->ab_ctl_mutex);
 

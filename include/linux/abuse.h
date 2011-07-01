@@ -59,7 +59,7 @@ struct abuse_xfr_hdr {
 enum {
 	ABUSE_READ			= 0,
 	ABUSE_WRITE			= 1,
-	ABUSE_SYNC_NOTIFICATION		= 2
+	ABUSE_SYNC_NOTIFICATION		= 2,
 };
 
 /*
@@ -68,7 +68,7 @@ enum {
 enum {
 	ABUSE_RESULT_OKAY		= 0,
 	ABUSE_RESULT_MEDIA_FAILURE	= 1,
-	ABUSE_RESULT_DEVICE_FAILURE	= 2
+	ABUSE_RESULT_DEVICE_FAILURE	= 2,
 };
 
 /*

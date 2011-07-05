@@ -148,6 +148,9 @@ enum mceusb_model_type {
 	MCE_GEN2_TX_INV,
 	POLARIS_EVK,
 	CX_HYBRID_TV,
+	MULTIFUNCTION,
+	TIVO_KIT,
+	MCE_GEN2_NO_TX,
 };
 
 struct mceusb_model {
@@ -155,8 +158,9 @@ struct mceusb_model {
 	u32 mce_gen2:1;
 	u32 mce_gen3:1;
 	u32 tx_mask_normal:1;
-	u32 is_polaris:1;
 	u32 no_tx:1;
+
+	int ir_intfnum;
 
 	const char *rc_map;	/* Allow specify a per-board map */
 	const char *name;	/* per-board name */
@@ -170,6 +174,10 @@ static const struct mceusb_model mceusb_model[] = {
 	[MCE_GEN2] = {
 		.mce_gen2 = 1,
 	},
+	[MCE_GEN2_NO_TX] = {
+		.mce_gen2 = 1,
+		.no_tx = 1,
+	},
 	[MCE_GEN2_TX_INV] = {
 		.mce_gen2 = 1,
 		.tx_mask_normal = 1,
@@ -179,19 +187,25 @@ static const struct mceusb_model mceusb_model[] = {
 		.tx_mask_normal = 1,
 	},
 	[POLARIS_EVK] = {
-		.is_polaris = 1,
 		/*
 		 * In fact, the EVK is shipped without
 		 * remotes, but we should have something handy,
 		 * to allow testing it
 		 */
-		.rc_map = RC_MAP_RC5_HAUPPAUGE_NEW,
+		.rc_map = RC_MAP_HAUPPAUGE,
 		.name = "Conexant Hybrid TV (cx231xx) MCE IR",
 	},
 	[CX_HYBRID_TV] = {
-		.is_polaris = 1,
 		.no_tx = 1, /* tx isn't wired up at all */
 		.name = "Conexant Hybrid TV (cx231xx) MCE IR",
+	},
+	[MULTIFUNCTION] = {
+		.mce_gen2 = 1,
+		.ir_intfnum = 2,
+	},
+	[TIVO_KIT] = {
+		.mce_gen2 = 1,
+		.rc_map = RC_MAP_TIVO,
 	},
 };
 
@@ -216,8 +230,11 @@ static struct usb_device_id mceusb_dev_table[] = {
 	{ USB_DEVICE(VENDOR_PHILIPS, 0x206c) },
 	/* Philips/Spinel plus IR transceiver for ASUS */
 	{ USB_DEVICE(VENDOR_PHILIPS, 0x2088) },
-	/* Realtek MCE IR Receiver */
-	{ USB_DEVICE(VENDOR_REALTEK, 0x0161) },
+	/* Philips IR transceiver (Dell branded) */
+	{ USB_DEVICE(VENDOR_PHILIPS, 0x2093) },
+	/* Realtek MCE IR Receiver and card reader */
+	{ USB_DEVICE(VENDOR_REALTEK, 0x0161),
+	  .driver_info = MULTIFUNCTION },
 	/* SMK/Toshiba G83C0004D410 */
 	{ USB_DEVICE(VENDOR_SMK, 0x031d),
 	  .driver_info = MCE_GEN2_TX_INV },
@@ -256,7 +273,7 @@ static struct usb_device_id mceusb_dev_table[] = {
 	  .driver_info = MCE_GEN2_TX_INV },
 	/* Topseed eHome Infrared Transceiver */
 	{ USB_DEVICE(VENDOR_TOPSEED, 0x0011),
-	  .driver_info = MCE_GEN2_TX_INV },
+	  .driver_info = MCE_GEN3 },
 	/* Ricavision internal Infrared Transceiver */
 	{ USB_DEVICE(VENDOR_RICAVISION, 0x0010) },
 	/* Itron ione Libra Q-11 */
@@ -272,7 +289,8 @@ static struct usb_device_id mceusb_dev_table[] = {
 	/* Formosa21 / eHome Infrared Receiver */
 	{ USB_DEVICE(VENDOR_FORMOSA, 0xe016) },
 	/* Formosa aim / Trust MCE Infrared Receiver */
-	{ USB_DEVICE(VENDOR_FORMOSA, 0xe017) },
+	{ USB_DEVICE(VENDOR_FORMOSA, 0xe017),
+	  .driver_info = MCE_GEN2_NO_TX },
 	/* Formosa Industrial Computing / Beanbag Emulation Device */
 	{ USB_DEVICE(VENDOR_FORMOSA, 0xe018) },
 	/* Formosa21 / eHome Infrared Receiver */
@@ -301,7 +319,8 @@ static struct usb_device_id mceusb_dev_table[] = {
 	/* Northstar Systems, Inc. eHome Infrared Transceiver */
 	{ USB_DEVICE(VENDOR_NORTHSTAR, 0xe004) },
 	/* TiVo PC IR Receiver */
-	{ USB_DEVICE(VENDOR_TIVO, 0x2000) },
+	{ USB_DEVICE(VENDOR_TIVO, 0x2000),
+	  .driver_info = TIVO_KIT },
 	/* Conexant Hybrid TV "Shelby" Polaris SDK */
 	{ USB_DEVICE(VENDOR_CONEXANT, 0x58a1),
 	  .driver_info = POLARIS_EVK },
@@ -596,11 +615,10 @@ static void mce_async_callback(struct urb *urb, struct pt_regs *regs)
 }
 
 /* request incoming or send outgoing usb packet - used to initialize remote */
-static void mce_request_packet(struct mceusb_dev *ir,
-			       struct usb_endpoint_descriptor *ep,
-			       unsigned char *data, int size, int urb_type)
+static void mce_request_packet(struct mceusb_dev *ir, unsigned char *data,
+			       int size, int urb_type)
 {
-	int res;
+	int res, pipe;
 	struct urb *async_urb;
 	struct device *dev = ir->dev;
 	unsigned char *async_buf;
@@ -620,10 +638,11 @@ static void mce_request_packet(struct mceusb_dev *ir,
 		}
 
 		/* outbound data */
-		usb_fill_int_urb(async_urb, ir->usbdev,
-			usb_sndintpipe(ir->usbdev, ep->bEndpointAddress),
+		pipe = usb_sndintpipe(ir->usbdev,
+				      ir->usb_ep_out->bEndpointAddress);
+		usb_fill_int_urb(async_urb, ir->usbdev, pipe,
 			async_buf, size, (usb_complete_t)mce_async_callback,
-			ir, ep->bInterval);
+			ir, ir->usb_ep_out->bInterval);
 		memcpy(async_buf, data, size);
 
 	} else if (urb_type == MCEUSB_RX) {
@@ -651,12 +670,12 @@ static void mce_request_packet(struct mceusb_dev *ir,
 
 static void mce_async_out(struct mceusb_dev *ir, unsigned char *data, int size)
 {
-	mce_request_packet(ir, ir->usb_ep_out, data, size, MCEUSB_TX);
+	mce_request_packet(ir, data, size, MCEUSB_TX);
 }
 
 static void mce_sync_in(struct mceusb_dev *ir, unsigned char *data, int size)
 {
-	mce_request_packet(ir, ir->usb_ep_in, data, size, MCEUSB_RX);
+	mce_request_packet(ir, data, size, MCEUSB_RX);
 }
 
 /* Send data out the IR blaster port(s) */
@@ -1101,7 +1120,7 @@ static int __devinit mceusb_dev_probe(struct usb_interface *intf,
 	bool is_gen3;
 	bool is_microsoft_gen1;
 	bool tx_mask_normal;
-	bool is_polaris;
+	int ir_intfnum;
 
 	dev_dbg(&intf->dev, "%s called\n", __func__);
 
@@ -1110,13 +1129,11 @@ static int __devinit mceusb_dev_probe(struct usb_interface *intf,
 	is_gen3 = mceusb_model[model].mce_gen3;
 	is_microsoft_gen1 = mceusb_model[model].mce_gen1;
 	tx_mask_normal = mceusb_model[model].tx_mask_normal;
-	is_polaris = mceusb_model[model].is_polaris;
+	ir_intfnum = mceusb_model[model].ir_intfnum;
 
-	if (is_polaris) {
-		/* Interface 0 is IR */
-		if (idesc->desc.bInterfaceNumber)
-			return -ENODEV;
-	}
+	/* There are multi-function devices with non-IR interfaces */
+	if (idesc->desc.bInterfaceNumber != ir_intfnum)
+		return -ENODEV;
 
 	/* step through the endpoints to find first bulk in and out endpoint */
 	for (i = 0; i < idesc->desc.bNumEndpoints; ++i) {

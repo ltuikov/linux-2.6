@@ -8,7 +8,7 @@
  * Distributed under the terms of the GNU GPL version 2.
  */
 
-#ifdef UASP_DEBUG
+#ifdef CONFIG_USB_UASP_DEBUG
 #if !defined(DEBUG) && !defined(CONFIG_DYNAMIC_DEBUG)
 #define DEBUG
 #endif

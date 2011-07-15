@@ -210,8 +210,10 @@ static inline int is_abuse_device(struct file *file)
 
 static int abuse_reset(struct abuse_device *ab)
 {
-	if (!ab->ab_disk->queue)
+	if (!ab->ab_disk->queue) {
+		dev_err(ab->device, "%s: no such device queue\n", __func__);
 		return -EINVAL;
+	}
 
 	abuse_flush_bio(ab);
 	ab->ab_flags = 0;
@@ -404,6 +406,7 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 
 	if (!arg)
 		return -EINVAL;
+
 	if (!ab)
 		return -ENODEV;
 
@@ -425,8 +428,10 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	spin_lock_irq(&ab->ab_lock);
 	bio = abuse_find_bio(ab, (struct bio *)xfr.ab_id);
 	spin_unlock_irq(&ab->ab_lock);
-	if (!bio)
+	if (!bio) {
+		dev_err(ab->device, "%s: no such bio\n", __func__);
 		return -ENOMSG;
+	}
 	
 	/*
 	 * This isn't just arbitrary anal-retentiveness.  Userspace will
@@ -439,6 +444,8 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	    bio->bi_vcnt != xfr.ab_vec_count ||
 	    (bio->bi_rw & REQ_WRITE) != xfr.ab_command) {
 	    	abuse_add_bio_unlocked(ab, bio);
+		dev_err(ab->device, "%s: bad sector or count or direction\n",
+			__func__);
 		return -EINVAL;
 	}
 	read = !(bio->bi_rw & REQ_WRITE);
@@ -521,6 +528,8 @@ static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		err = abuse_put_bio(ab, (struct abuse_xfr_hdr __user *) arg);
 		break;
 	default:
+		dev_err(ab->device, "%s: invalid IOCTL 0x%08x\n", __func__,
+			cmd);
 		err = -EINVAL;
 		break;
 	}

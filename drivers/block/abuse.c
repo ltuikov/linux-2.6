@@ -91,6 +91,7 @@ static struct class *abuse_class;
 static int max_part;
 static int num_minors;
 static int dev_shift;
+static int abuse_range;
 
 struct abuse_device *abuse_get_dev(int dev)
 {
@@ -718,7 +719,6 @@ static struct kobject *abuse_probe(dev_t dev, int *part, void *data)
 static int __init abuse_init(void)
 {
 	int devi, nr, err;
-	unsigned long range;
 	struct abuse_device *ab, *next;
 
 	/*
@@ -743,10 +743,10 @@ static int __init abuse_init(void)
 
 	if (max_abuse) {
 		nr = max_abuse;
-		range = max_abuse;
+		abuse_range = max_abuse;
 	} else {
 		nr = MAX_ABUSE_DEV_DEF;
-		range = MAX_ABUSE_DEV_DEF;
+		abuse_range = MAX_ABUSE_DEV_DEF;
 	}
 
 	err = register_blkdev(ABUSE_MAJOR, "abuse");
@@ -756,13 +756,14 @@ static int __init abuse_init(void)
 	}
 	pr_info("abuse: registered blkdev major %d\n", ABUSE_MAJOR);
 	
-	err = register_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range, "abuse");
+	err = register_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), abuse_range,
+				     "abuse");
 	if (err) {
 		pr_err("%s: register_chrdev_region:%d\n", __func__, err);
 		goto unregister_blk;
 	}
-	pr_info("abuse: registered chrdev major %d, range %ld\n",
-		ABUSECTL_MAJOR, range);
+	pr_info("abuse: registered chrdev major %d, range %d\n",
+		ABUSECTL_MAJOR, abuse_range);
 
 	abuse_class = class_create(THIS_MODULE, "abuse");
 	if (IS_ERR(abuse_class)) {
@@ -787,7 +788,7 @@ static int __init abuse_init(void)
 		add_disk(ab->ab_disk);
 	}
 
-	blk_register_region(MKDEV(ABUSE_MAJOR, 0), range,
+	blk_register_region(MKDEV(ABUSE_MAJOR, 0), abuse_range,
 				  THIS_MODULE, abuse_probe, NULL, NULL);
 
 	pr_info("abuse: module loaded\n");
@@ -798,7 +799,7 @@ free_devices:
 		abuse_free(ab);
 	}
 unregister_chr:
-	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range);
+	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), abuse_range);
 unregister_blk:
 	unregister_blkdev(ABUSE_MAJOR, "abuse");
 	return err;
@@ -806,18 +807,15 @@ unregister_blk:
 
 static void __exit abuse_exit(void)
 {
-	unsigned long range;
 	struct abuse_device *ab, *next;
-
-	range = max_abuse ? max_abuse :  1UL << (MINORBITS - dev_shift);
 
 	list_for_each_entry_safe(ab, next, &abuse_devices, ab_list) {
 		abuse_del_one(ab);
 	}
 
 	class_destroy(abuse_class);
-	blk_unregister_region(MKDEV(ABUSE_MAJOR, 0), range);
-	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), range);
+	blk_unregister_region(MKDEV(ABUSE_MAJOR, 0), abuse_range);
+	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), abuse_range);
 	unregister_blkdev(ABUSE_MAJOR, "abuse");
 	pr_info("abuse: module unloaded\n");
 }

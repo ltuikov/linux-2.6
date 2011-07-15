@@ -80,5 +80,6 @@ enum {
 #define ABUSE_RESET		_IO( 'A', 2)
 #define ABUSE_GET_BIO		_IOR('A', 3, struct abuse_xfr_hdr)
 #define ABUSE_PUT_BIO		_IOW('A', 4, struct abuse_xfr_hdr)
+#define ABUSE_GET_WRITE_DATA	_IOW('A', 5, struct abuse_xfr_hdr)
 
 #endif

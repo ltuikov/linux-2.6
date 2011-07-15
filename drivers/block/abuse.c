@@ -397,7 +397,8 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 }
 
 static int
-abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
+abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
+	      int put)
 {
 	struct abuse_xfr_hdr xfr;
 	struct bio *bio;
@@ -443,13 +444,13 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	if (bio->bi_sector != xfr.ab_sector ||
 	    bio->bi_vcnt != xfr.ab_vec_count ||
 	    (bio->bi_rw & REQ_WRITE) != xfr.ab_command) {
-	    	abuse_add_bio_unlocked(ab, bio);
+		abuse_add_bio_unlocked(ab, bio);
 		dev_err(ab->device, "%s: bad sector or count or direction\n",
 			__func__);
 		return -EINVAL;
 	}
 	read = !(bio->bi_rw & REQ_WRITE);
-	
+
 	/*
 	 * Now handle individual failures that don't affect other I/Os.
 	 */
@@ -458,44 +459,65 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 		return 0;
 	}
 
+	if (read && !put) {
+		abuse_add_bio_unlocked(ab, bio);
+		dev_err(ab->device, "%s: read and !put: bad IOCTL\n", __func__);
+		return -EINVAL;
+	}
+
 	/*
 	 * We've now stolen the bio off the queue.  This is stupid if we don't
 	 * complete it.  But we don't want to hold the spinlock while doing I/O
 	 * from the user component.  If userspace bugs out and crashes, as is
 	 * to be expected from a userspace program, so be it.  The bio can
 	 * always be cancelled by a sane actor when we put it back.
+	 * put write
+	 *  0    0   -> invalid and handled above
+	 *  0    1   -> ABUSE_GET_WRITE_DATA: perform the copy below
+	 *  1    0   -> ABUSE_PUT_BIO for READ: perform the copy below
+	 *  1    1   -> ABUSE_PUT_BIO for WRITE: don't do the copy below
 	 */
-	if (copy_from_user(ab->ab_xfer, (void *)xfr.ab_transfer_address,
-			     bio->bi_vcnt * sizeof(ab->ab_xfer[0]))) {
-	    	abuse_add_bio_unlocked(ab, bio);
-		return -EFAULT;
-	}
-	
-	/*
-	 * You made it this far?  It's time for the third movement.
-	 */
-	bio_for_each_segment(bvec, bio, i) {
-		int ret;
-		void *kaddr = kmap(bvec->bv_page);
-
-		if (read)
-			ret = copy_from_user(kaddr + bvec->bv_offset, 
-				(void *)ab->ab_xfer[i].ab_address,
-				bvec->bv_len);
-		else
-			ret = copy_to_user((void *)ab->ab_xfer[i].ab_address,
-				kaddr + bvec->bv_offset, bvec->bv_len);
-
-		kunmap(bvec->bv_page);
-		if (ret != 0) { 
-			/* Wise, up sucker! (PWEI RULEZ) */
+	if (put ^ !read) {
+		dev_dbg(ab->device, "%s: put:write:%1d:%1d\n", __func__, put,
+			!read);
+		if (copy_from_user(ab->ab_xfer, (void *)xfr.ab_transfer_address,
+				   bio->bi_vcnt * sizeof(ab->ab_xfer[0]))) {
 			abuse_add_bio_unlocked(ab, bio);
 			return -EFAULT;
+		}
+
+		/*
+		 * You made it this far?  It's time for the third movement.
+		 */
+		bio_for_each_segment(bvec, bio, i) {
+			int ret;
+			void *kaddr = kmap(bvec->bv_page);
+
+			if (read)
+				ret = copy_from_user(kaddr + bvec->bv_offset,
+						     (void *)ab->ab_xfer[i].ab_address,
+						     bvec->bv_len);
+			else
+				ret = copy_to_user((void *)ab->ab_xfer[i].ab_address,
+						   kaddr + bvec->bv_offset, bvec->bv_len);
+
+			kunmap(bvec->bv_page);
+			if (ret != 0) {
+				/* Wise, up sucker! (PWEI RULEZ) */
+				abuse_add_bio_unlocked(ab, bio);
+				return -EFAULT;
+			}
 		}
 	}
 
 	/* Well, you did it.  Congraulations, you get a pony. */
-	bio_endio(bio, 0);
+	if (put) {
+		dev_dbg(ab->device, "%s: ending bio\n", __func__);
+		bio_endio(bio, 0);
+	} else {
+		dev_dbg(ab->device, "%s: requeueing bio\n", __func__);
+		abuse_add_bio_unlocked(ab, bio);
+	}
 
 	return 0;
 }
@@ -525,7 +547,10 @@ static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		err = abuse_get_bio(ab, (struct abuse_xfr_hdr __user *) arg);
 		break;
 	case ABUSE_PUT_BIO:
-		err = abuse_put_bio(ab, (struct abuse_xfr_hdr __user *) arg);
+		err = abuse_put_bio(ab, (struct abuse_xfr_hdr __user *) arg, 1);
+		break;
+	case ABUSE_GET_WRITE_DATA:
+		err = abuse_put_bio(ab, (struct abuse_xfr_hdr __user *) arg, 0);
 		break;
 	default:
 		dev_err(ab->device, "%s: invalid IOCTL 0x%08x\n", __func__,

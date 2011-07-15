@@ -281,6 +281,15 @@ void do_putbio(int fd)
 		}
 	}
 
+	if (hdr.ab_command == ABUSE_WRITE) {
+		res = ioctl(fd, ABUSE_GET_WRITE_DATA, &hdr);
+		if (res < 0) {
+			fprintf(stderr, "%s: ioctl ABUSE_GET_WRITE_DATA: %s "
+				"(%d)\n", prog, strerror(errno), errno);
+			exit(res);
+		}
+	}
+
 	res = ioctl(fd, ABUSE_PUT_BIO, &hdr);
 	if (res < 0) {
 		fprintf(stderr, "%s: ioctl ABUSE_PUT_BIO: %s (%d)\n",

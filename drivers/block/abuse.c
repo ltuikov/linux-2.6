@@ -623,6 +623,7 @@ static struct file_operations abctl_fops = {
 	.open =		abctl_open,
 	.release =	abctl_release,
 	.unlocked_ioctl = abctl_ioctl,
+	.compat_ioctl   = abctl_ioctl,
 	.poll =		abctl_poll,
 };
 

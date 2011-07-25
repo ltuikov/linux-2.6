@@ -26,31 +26,32 @@ enum {
  */
 
 struct abuse_info {
-	__u64		   ab_device;			/* ioctl r/o */
-	__u64		   ab_size;			/* ioctl r/w */
-	__u32		   ab_number;			/* ioctl r/o */
-	__u32		   ab_flags;			/* ioctl r/w */
-	__u32		   ab_blocksize;		/* ioctl r/w */
-	__u32		   ab_max_queue;		/* ioctl r/w */
-	__u32		   ab_queue_size;		/* ioctl r/o */
-	__u32		   ab_errors;			/* ioctl r/o */
-	__u32		   ab_max_vecs;			/* ioctl r/o */
+	__u64	ab_device;	  /* ioctl r/o */
+	__u64	ab_size;	  /* ioctl r/w */
+	__u32	ab_number;	  /* ioctl r/o */
+	__u32	ab_flags;	  /* ioctl r/w */
+	__u32	ab_blocksize;	  /* ioctl r/w */
+	__u32	ab_max_queue;	  /* ioctl r/w */
+	__u32	ab_queue_size;	  /* ioctl r/o */
+	__u32	ab_errors;	  /* ioctl r/o */
+	__u32	ab_max_vecs;	  /* ioctl r/o */
+	__u32	_fill;		  /* fill to 64 byte boundary */
 };
 
 struct abuse_vec {
-	__u64			ab_address;
-	__u32			ab_len;
-	__u32			ab_offset;
+	__u64	ab_address;
+	__u32	ab_len;
+	__u32	ab_offset;
 };
 
 struct abuse_xfr_hdr {
-	__u64			ab_id;
-	__u64			ab_sector;
-	__u32			ab_command;
-	__u32			ab_result;
-	__u32			ab_vec_count;
-	__u32			ab_vec_offset;
-	__u64			ab_transfer_address;
+	__u64	ab_id;
+	__u64	ab_sector;
+	__u32	ab_command;
+	__u32	ab_result;
+	__u32	ab_vec_count;
+	__u32	ab_vec_offset;
+	__u64	ab_transfer_address;
 };
 
 /*

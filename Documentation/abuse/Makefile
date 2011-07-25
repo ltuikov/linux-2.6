@@ -5,6 +5,11 @@ ABUSECTL = abusectl
 
 CFLAGS += -Wall -Wextra -O2
 
+ifeq ($(MAKECMDGOALS), 32)
+CFLAGS += -m32
+32: $(ABUSECTL)
+endif
+
 $(ABUSECTL): $(ABUSE_HEADER_FILE)
 
 $(ABUSE_HEADER_FILE):
@@ -14,4 +19,4 @@ clean:
 	@$(RM) $(ABUSECTL)
 	@$(RM) $(ABUSE_HEADER_FILE)
 
-.PHONY: clean
+.PHONY: clean 32

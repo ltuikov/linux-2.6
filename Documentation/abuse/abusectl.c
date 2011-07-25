@@ -238,7 +238,7 @@ static void ab_getbio(int fd, struct abuse_xfr_hdr *hdr,
 	int res, ii;
 
 	memset(hdr, 0, sizeof(*hdr));
-	hdr->ab_transfer_address = (__u64)xfr;
+	hdr->ab_transfer_address = (unsigned long) xfr ;
 
 	res = ioctl(fd, ABUSE_GET_BIO, hdr);
 	if (res < 0) {
@@ -274,7 +274,7 @@ void do_putbio(int fd)
 	ab_getbio(fd, &hdr, xfr, 512);
 
 	for (ii = 0; ii < (int) hdr.ab_vec_count; ii++) {
-		xfr[ii].ab_address = (__u64)malloc(xfr[ii].ab_len);
+		xfr[ii].ab_address = (unsigned long)malloc(xfr[ii].ab_len);
 		if (xfr[ii].ab_address == 0) {
 			hdr.ab_result = ABUSE_RESULT_MEDIA_FAILURE;
 			break;
@@ -298,7 +298,7 @@ void do_putbio(int fd)
 	}
 
 	for (ii = 0; ii < (int) hdr.ab_vec_count; ii++) {
-		free((void *)xfr[ii].ab_address);
+		free((void *)(unsigned long)xfr[ii].ab_address);
 	}
 }
 

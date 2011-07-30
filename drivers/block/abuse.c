@@ -389,9 +389,10 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 		return -EFAULT;
 
 	if (xfr.ab_transfer_address &&
-		copy_to_user((void *)xfr.ab_transfer_address, ab->ab_xfer,
-			     xfr.ab_vec_count * sizeof(ab->ab_xfer[0])))
+	    copy_to_user((void *) xfr.ab_transfer_address, ab->ab_xfer,
+			 xfr.ab_vec_count * sizeof(ab->ab_xfer[0]))) {
 		return -EFAULT;
+	}
 	
 	return bio ? 0 : -ENOMSG;
 }

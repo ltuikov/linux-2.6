@@ -276,12 +276,13 @@ void do_putbio(int fd)
 	for (ii = 0; ii < (int) hdr.ab_vec_count; ii++) {
 		xfr[ii].ab_address = (unsigned long)malloc(xfr[ii].ab_len);
 		if (xfr[ii].ab_address == 0) {
+			fprintf(stderr, "%s: out of memory\n", __func__);
 			hdr.ab_result = ABUSE_RESULT_MEDIA_FAILURE;
 			break;
 		}
 	}
 
-	if (hdr.ab_command == ABUSE_WRITE) {
+	if (hdr.ab_result == 0 && hdr.ab_command == ABUSE_WRITE) {
 		res = ioctl(fd, ABUSE_GET_WRITE_DATA, &hdr);
 		if (res < 0) {
 			fprintf(stderr, "%s: ioctl ABUSE_GET_WRITE_DATA: %s "

@@ -43,8 +43,9 @@
 #include <linux/bio.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
-#include <linux/abuse.h>
 #include <asm/uaccess.h>
+
+#include <linux/abuse.h>
 
 /* Default number of devices to create.
  */
@@ -64,11 +65,14 @@ struct abuse_device {
 	struct block_device *ab_device;
 	unsigned	ab_blocksize;
 
-	gfp_t		old_gfp_mask;
-
 	spinlock_t		ab_lock;
+	/* bios pending to be gotten by user space */
 	struct bio 		*ab_bio;
 	struct bio		*ab_biotail;
+	/* bios pending in user space */
+	struct bio		*ab_ubio;
+	struct bio		*ab_ubiotail;
+
 	struct mutex		ab_ctl_mutex;
 	wait_queue_head_t	ab_event;
 
@@ -121,16 +125,29 @@ static void abuse_add_bio(struct abuse_device *ab, struct bio *bio)
 	ab->ab_queue_size++;
 }
 
-static inline void abuse_add_bio_unlocked(struct abuse_device *ab,
-	struct bio *bio)
+static void abuse_add_ubio(struct abuse_device *ab, struct bio *bio)
 {
-	spin_lock_irq(&ab->ab_lock);
-	abuse_add_bio(ab, bio);
-	spin_unlock_irq(&ab->ab_lock);
+	dev_dbg(ab->device, "%s: bio:%p\n", __func__, bio);
+	if (ab->ab_ubiotail) {
+		ab->ab_ubiotail->bi_next = bio;
+		ab->ab_ubiotail = bio;
+	} else {
+		ab->ab_ubio = ab->ab_ubiotail = bio;
+	}
+	ab->ab_queue_size++;
 }
 
-static inline struct bio *abuse_find_bio(struct abuse_device *ab,
-	struct bio *match)
+static inline void abuse_add_ubio_unlocked(struct abuse_device *ab,
+					   struct bio *bio)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ab->ab_lock, flags);
+	abuse_add_ubio(ab, bio);
+	spin_unlock_irqrestore(&ab->ab_lock, flags);
+}
+
+static struct bio *abuse_find_bio(struct abuse_device *ab, struct bio *match)
 {
 	struct bio *bio;
 	struct bio **pprev = &ab->ab_bio;
@@ -155,49 +172,85 @@ static inline struct bio *abuse_find_bio(struct abuse_device *ab,
 	return bio;
 }
 
-static int abuse_make_request(struct request_queue *q, struct bio *old_bio)
+static struct bio *abuse_find_ubio(struct abuse_device *ab, struct bio *match)
+{
+	struct bio *bio;
+	struct bio **pprev = &ab->ab_ubio;
+
+	while ((bio = *pprev) != 0 && match && bio != match) {
+		pprev = &bio->bi_next;
+	}
+
+	if (bio) {
+		if (bio == ab->ab_ubiotail) {
+			ab->ab_ubiotail = bio == ab->ab_ubio ? NULL :
+				(struct bio *)
+				((caddr_t)pprev - offsetof(struct bio, bi_next));
+		}
+		*pprev = bio->bi_next;
+		bio->bi_next = NULL;
+		ab->ab_queue_size--;
+	}
+
+	dev_dbg(ab->device, "%s: bio:%p match:%p\n", __func__, bio, match);
+
+	return bio;
+}
+
+static int abuse_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct abuse_device *ab = q->queuedata;
-	int rw = bio_rw(old_bio);
+	int rw = bio_rw(bio);
+	unsigned long flags;
 
 	if (rw == READA)
 		rw = READ;
 
 	BUG_ON(!ab || (rw != READ && rw != WRITE));
 
-	spin_lock_irq(&ab->ab_lock);
+	spin_lock_irqsave(&ab->ab_lock, flags);
 	if (unlikely(rw == WRITE && (ab->ab_flags & ABUSE_FLAGS_READ_ONLY)))
 		goto out;
 	if (unlikely(ab->ab_queue_size == ab->ab_max_queue))
 		goto out;
-	abuse_add_bio(ab, old_bio);
+	abuse_add_bio(ab, bio);
 	wake_up(&ab->ab_event);
-	spin_unlock_irq(&ab->ab_lock);
+	spin_unlock_irqrestore(&ab->ab_lock, flags);
 
 	return 0;
 out:
 	ab->ab_errors++;
-	spin_unlock_irq(&ab->ab_lock);
-	bio_io_error(old_bio);
+	spin_unlock_irqrestore(&ab->ab_lock, flags);
+	bio_io_error(bio);
 
 	return 0;
 }
 
 static void abuse_flush_bio(struct abuse_device *ab)
 {
-	struct bio *bio, *next;
+	struct bio *bio, *next, *ubio;
+	unsigned long flags;
 
-	spin_lock_irq(&ab->ab_lock);
+	spin_lock_irqsave(&ab->ab_lock, flags);
 	bio = ab->ab_bio;
 	ab->ab_biotail = ab->ab_bio = NULL;
+	ubio = ab->ab_ubio;
+	ab->ab_ubiotail = ab->ab_ubio = NULL;
 	ab->ab_queue_size = 0;
-	spin_unlock_irq(&ab->ab_lock);
+	spin_unlock_irqrestore(&ab->ab_lock, flags);
 
 	while (bio) {
 		next = bio->bi_next;
 		bio->bi_next = NULL;
 		bio_io_error(bio);
 		bio = next;
+	}
+
+	while (ubio) {
+		next = ubio->bi_next;
+		ubio->bi_next = NULL;
+		bio_io_error(ubio);
+		ubio = next;
 	}
 }
 
@@ -355,6 +408,7 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 {
 	struct abuse_xfr_hdr xfr;
 	struct bio *bio;
+	unsigned long flags;
 
 	if (!arg)
 		return -EINVAL;
@@ -364,7 +418,7 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	if (copy_from_user(&xfr, arg, sizeof (struct abuse_xfr_hdr)))
 		return -EFAULT;
 
-	spin_lock_irq(&ab->ab_lock);
+	spin_lock_irqsave(&ab->ab_lock, flags);
 	bio = abuse_find_bio(ab, NULL);
 	xfr.ab_id = (__u64)bio;
 	if (bio) {
@@ -377,24 +431,34 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 			ab->ab_xfer[i].ab_offset = bio->bi_io_vec[i].bv_offset;
 		}
 
-		/* Put it back to the end of the list */
-		abuse_add_bio(ab, bio);
+		/* Now put it in the pending-in-userspace list.
+		 */
+		abuse_add_ubio(ab, bio);
 	} else {
 		xfr.ab_transfer_address = 0;
 		xfr.ab_vec_count = 0;
 	}
-	spin_unlock_irq(&ab->ab_lock);
+	spin_unlock_irqrestore(&ab->ab_lock, flags);
 
 	if (copy_to_user(arg, &xfr, sizeof(xfr)))
-		return -EFAULT;
+		goto Move_back;
 
 	if (xfr.ab_transfer_address &&
 	    copy_to_user((void *) xfr.ab_transfer_address, ab->ab_xfer,
 			 xfr.ab_vec_count * sizeof(ab->ab_xfer[0]))) {
-		return -EFAULT;
+		goto Move_back;
 	}
 	
 	return bio ? 0 : -ENOMSG;
+Move_back:
+	if (bio) {
+		spin_lock_irqsave(&ab->ab_lock, flags);
+		bio = abuse_find_ubio(ab, bio);
+		if (bio)
+			abuse_add_bio(ab, bio);
+		spin_unlock_irqrestore(&ab->ab_lock, flags);
+	}
+	return -EFAULT;
 }
 
 static int
@@ -405,6 +469,7 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 	struct bio *bio;
 	struct bio_vec *bvec;
 	int i, read;
+	unsigned long flags;
 
 	if (!arg)
 		return -EINVAL;
@@ -415,37 +480,23 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 	if (copy_from_user(&xfr, arg, sizeof (struct abuse_xfr_hdr)))
 		return -EFAULT;
 
-	/*
-	 * Handle catastrophes first.  Do this by giving them catnip.
-	 */
 	if (unlikely(xfr.ab_result == ABUSE_RESULT_DEVICE_FAILURE)) {
 		abuse_flush_bio(ab);
 		return 0;
 	}
 
-	/*
-	 * Look up the dang thing to make sure the user is telling us
-	 * they've actually completed some work.  It's very doubtful.
-	 */
-	spin_lock_irq(&ab->ab_lock);
-	bio = abuse_find_bio(ab, (struct bio *)xfr.ab_id);
-	spin_unlock_irq(&ab->ab_lock);
+	spin_lock_irqsave(&ab->ab_lock, flags);
+	bio = abuse_find_ubio(ab, (struct bio *)xfr.ab_id);
+	spin_unlock_irqrestore(&ab->ab_lock, flags);
 	if (!bio) {
 		dev_err(ab->device, "%s: no such bio\n", __func__);
 		return -ENOMSG;
 	}
-	
-	/*
-	 * This isn't just arbitrary anal-retentiveness.  Userspace will
-	 * obviously crash and burn, and so we check all fields as stringently
-	 * as possible to provide some protection against the case when we
-	 * re-use the same bio and some user-tarded program tries to complete
-	 * an historical event.  Better prophylactics are possible, but crazy.
-	 */
+
 	if (bio->bi_sector != xfr.ab_sector ||
 	    bio->bi_vcnt != xfr.ab_vec_count ||
 	    (bio->bi_rw & REQ_WRITE) != xfr.ab_command) {
-		abuse_add_bio_unlocked(ab, bio);
+		abuse_add_ubio_unlocked(ab, bio);
 		dev_err(ab->device, "%s: bad sector or count or direction\n",
 			__func__);
 		return -EINVAL;
@@ -461,17 +512,15 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 	}
 
 	if (read && !put) {
-		abuse_add_bio_unlocked(ab, bio);
+		abuse_add_ubio_unlocked(ab, bio);
 		dev_err(ab->device, "%s: read and !put: bad IOCTL\n", __func__);
 		return -EINVAL;
 	}
 
 	/*
-	 * We've now stolen the bio off the queue.  This is stupid if we don't
-	 * complete it.  But we don't want to hold the spinlock while doing I/O
-	 * from the user component.  If userspace bugs out and crashes, as is
-	 * to be expected from a userspace program, so be it.  The bio can
-	 * always be cancelled by a sane actor when we put it back.
+	 * If there is a problem with copying to/from userspace,
+	 * the bio is copied back to the pending-in-userspace list.
+	 *
 	 * put write
 	 *  0    0   -> invalid and handled above
 	 *  0    1   -> ABUSE_GET_WRITE_DATA: perform the copy below
@@ -483,13 +532,10 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 			!read);
 		if (copy_from_user(ab->ab_xfer, (void *)xfr.ab_transfer_address,
 				   bio->bi_vcnt * sizeof(ab->ab_xfer[0]))) {
-			abuse_add_bio_unlocked(ab, bio);
+			abuse_add_ubio_unlocked(ab, bio);
 			return -EFAULT;
 		}
 
-		/*
-		 * You made it this far?  It's time for the third movement.
-		 */
 		bio_for_each_segment(bvec, bio, i) {
 			int ret;
 			void *kaddr = kmap(bvec->bv_page);
@@ -504,20 +550,18 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 
 			kunmap(bvec->bv_page);
 			if (ret != 0) {
-				/* Wise, up sucker! (PWEI RULEZ) */
-				abuse_add_bio_unlocked(ab, bio);
+				abuse_add_ubio_unlocked(ab, bio);
 				return -EFAULT;
 			}
 		}
 	}
 
-	/* Well, you did it.  Congraulations, you get a pony. */
 	if (put) {
 		dev_dbg(ab->device, "%s: ending bio\n", __func__);
 		bio_endio(bio, 0);
 	} else {
 		dev_dbg(ab->device, "%s: requeueing bio\n", __func__);
-		abuse_add_bio_unlocked(ab, bio);
+		abuse_add_ubio_unlocked(ab, bio);
 	}
 
 	return 0;

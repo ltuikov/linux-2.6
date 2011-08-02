@@ -503,18 +503,27 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 	}
 	read = !(bio->bi_rw & REQ_WRITE);
 
-	/*
-	 * Now handle individual failures that don't affect other I/Os.
-	 */
-	if (unlikely(xfr.ab_result == ABUSE_RESULT_MEDIA_FAILURE)) {
-		bio_io_error(bio);
-		return 0;
-	}
-
 	if (read && !put) {
 		abuse_add_ubio_unlocked(ab, bio);
 		dev_err(ab->device, "%s: read and !put: bad IOCTL\n", __func__);
 		return -EINVAL;
+	}
+
+	/*
+	 * Now handle individual failures that don't affect other I/Os.
+	 */
+	if (unlikely(xfr.ab_result == ABUSE_RESULT_MEDIA_FAILURE)) {
+		if (put) {
+			bio_io_error(bio);
+		} else {
+			/* ABUSE_GET_WRITE_DATA and the bio has an
+			 * error: user space shouldn't do this, but if
+			 * they did, return success and let them
+			 * complete the bio with ABUSE_PUT_BIO later.
+			 */
+			;
+		}
+		return 0;
 	}
 
 	/*

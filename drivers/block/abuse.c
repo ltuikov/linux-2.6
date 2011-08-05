@@ -468,7 +468,7 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 	struct abuse_xfr_hdr xfr;
 	struct bio *bio;
 	struct bio_vec *bvec;
-	int i, read;
+	int i, write;
 	unsigned long flags;
 
 	if (!arg)
@@ -501,11 +501,12 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 			__func__);
 		return -EINVAL;
 	}
-	read = !(bio->bi_rw & REQ_WRITE);
+	write = bio->bi_rw & REQ_WRITE;
 
-	if (read && !put) {
+	if (write == 0 && put == 0) {
 		abuse_add_ubio_unlocked(ab, bio);
-		dev_err(ab->device, "%s: read and !put: bad IOCTL\n", __func__);
+		dev_err(ab->device, "%s: write=0 and put=0: bad IOCTL\n",
+			__func__);
 		return -EINVAL;
 	}
 
@@ -536,9 +537,9 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 	 *  1    0   -> ABUSE_PUT_BIO for READ: perform the copy below
 	 *  1    1   -> ABUSE_PUT_BIO for WRITE: don't do the copy below
 	 */
-	if (put ^ !read) {
+	if (put ^ write) {
 		dev_dbg(ab->device, "%s: put:write:%1d:%1d\n", __func__, put,
-			!read);
+			write);
 		if (copy_from_user(ab->ab_xfer, (void *)xfr.ab_transfer_address,
 				   bio->bi_vcnt * sizeof(ab->ab_xfer[0]))) {
 			abuse_add_ubio_unlocked(ab, bio);
@@ -549,13 +550,14 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 			int ret;
 			void *kaddr = kmap(bvec->bv_page);
 
-			if (read)
-				ret = copy_from_user(kaddr + bvec->bv_offset,
-						     (void *)ab->ab_xfer[i].ab_address,
-						     bvec->bv_len);
+			if (write)
+				ret = copy_to_user((void *) ab->ab_xfer[i].ab_address,
+						   kaddr + bvec->bv_offset,
+						   bvec->bv_len);
 			else
-				ret = copy_to_user((void *)ab->ab_xfer[i].ab_address,
-						   kaddr + bvec->bv_offset, bvec->bv_len);
+				ret = copy_from_user(kaddr + bvec->bv_offset,
+						     (void *) ab->ab_xfer[i].ab_address,
+						     bvec->bv_len);
 
 			kunmap(bvec->bv_page);
 			if (ret != 0) {

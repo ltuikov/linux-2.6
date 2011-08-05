@@ -36,13 +36,13 @@ struct abuse_info {
 	__u32	ab_errors;	  /* ioctl r/o */
 	__u32	ab_max_vecs;	  /* ioctl r/o */
 	__u32	_fill;		  /* fill to 64 byte boundary */
-} __packed;
+} __attribute__ ((packed));
 
 struct abuse_vec {
 	__u64	ab_address;
 	__u32	ab_len;
 	__u32	ab_offset;
-} __packed;
+} __attribute__ ((packed));
 
 struct abuse_xfr_hdr {
 	__u64	ab_id;
@@ -52,7 +52,7 @@ struct abuse_xfr_hdr {
 	__u32	ab_vec_count;
 	__u32	ab_vec_offset;
 	__u64	ab_transfer_address;
-} __packed;
+} __attribute__ ((packed));
 
 /*
  * ab_command codes

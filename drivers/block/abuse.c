@@ -221,6 +221,8 @@ static int abuse_make_request(struct request_queue *q, struct bio *bio)
 out:
 	ab->ab_errors++;
 	spin_unlock_irqrestore(&ab->ab_lock, flags);
+	dev_err(ab->device, "%s: queue overflow: sector %lu\n", __func__,
+		bio->bi_sector);
 	bio_io_error(bio);
 
 	return 0;
@@ -569,6 +571,7 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 
 	if (put) {
 		dev_dbg(ab->device, "%s: ending bio\n", __func__);
+		set_bit(BIO_UPTODATE, &bio->bi_flags);
 		bio_endio(bio, 0);
 	} else {
 		dev_dbg(ab->device, "%s: requeueing bio\n", __func__);

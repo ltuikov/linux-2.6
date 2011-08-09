@@ -211,8 +211,6 @@ static int abuse_make_request(struct request_queue *q, struct bio *bio)
 	spin_lock_irqsave(&ab->ab_lock, flags);
 	if (unlikely(rw == WRITE && (ab->ab_flags & ABUSE_FLAGS_READ_ONLY)))
 		goto out;
-	if (unlikely(ab->ab_queue_size == ab->ab_max_queue))
-		goto out;
 	abuse_add_bio(ab, bio);
 	wake_up(&ab->ab_event);
 	spin_unlock_irqrestore(&ab->ab_lock, flags);

@@ -587,7 +587,10 @@ static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (!ab || !ab->ab_disk)
 		return -ENODEV;
 
-	mutex_lock(&ab->ab_ctl_mutex);
+	err = mutex_lock_interruptible(&ab->ab_ctl_mutex);
+	if (err)
+		return err;
+
 	switch (cmd) {
 	case ABUSE_GET_STATUS:
 		err = abuse_get_status(ab, ab->ab_device,

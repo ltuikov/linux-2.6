@@ -279,8 +279,6 @@ static int abuse_reset(struct abuse_device *ab)
 	if (ab->ab_device) {
 		bd_set_size(ab->ab_device, 0);
 		invalidate_bdev(ab->ab_device);
-		if (max_part > 0)
-			ioctl_by_bdev(ab->ab_device, BLKRRPART, 0);
 		blkdev_put(ab->ab_device, FMODE_READ);
 		ab->ab_device = NULL;
 		module_put(THIS_MODULE);
@@ -290,14 +288,14 @@ static int abuse_reset(struct abuse_device *ab)
 }
 
 static int
-abuse_set_status_int(struct abuse_device *ab, struct block_device *bdev,
-	const struct abuse_info *info)
+__abuse_set_status(struct abuse_device *ab, struct block_device *bdev,
+		   const struct abuse_info *info)
 {
-	sector_t size = (sector_t)(info->ab_size >> 9);
+	sector_t size_in_512 = (sector_t)(info->ab_size >> 9);
 	loff_t blocks;
 	int err;
 
-	if (unlikely((loff_t)size != size))
+	if (unlikely((loff_t)size_in_512 != size_in_512))
 		return -EFBIG;
 
 	blocks = info->ab_size / info->ab_blocksize;
@@ -346,19 +344,16 @@ abuse_set_status_int(struct abuse_device *ab, struct block_device *bdev,
 	ab->ab_blocksize = info->ab_blocksize;
 	ab->ab_max_queue = info->ab_max_queue;
 
-	set_capacity(ab->ab_disk, size);
+	set_capacity(ab->ab_disk, size_in_512);
 	set_device_ro(bdev, (ab->ab_flags & ABUSE_FLAGS_READ_ONLY) != 0);
-	bd_set_size(bdev, size << 9);
+	bd_set_size(bdev, size_in_512 << 9);
 	set_blocksize(bdev, ab->ab_blocksize);
-
-	if (max_part > 0)
-		ioctl_by_bdev(bdev, BLKRRPART, 0);
 
 	return 0;
 }
 
 static int
-abuse_get_status_int(struct abuse_device *ab, struct abuse_info *info)
+__abuse_get_status(struct abuse_device *ab, struct abuse_info *info)
 {
 	memset(info, 0, sizeof(*info));
 
@@ -383,7 +378,7 @@ abuse_set_status(struct abuse_device *ab, struct block_device *bdev,
 	if (copy_from_user(&info, arg, sizeof (struct abuse_info)))
 		return -EFAULT;
 
-	return abuse_set_status_int(ab, bdev, &info);
+	return __abuse_set_status(ab, bdev, &info);
 }
 
 static int
@@ -396,7 +391,7 @@ abuse_get_status(struct abuse_device *ab, struct block_device *bdev,
 	if (!arg)
 		err = -EINVAL;
 	if (!err)
-		err = abuse_get_status_int(ab, &info);
+		err = __abuse_get_status(ab, &info);
 	if (!err && copy_to_user(arg, &info, sizeof(info)))
 		err = -EFAULT;
 
@@ -619,6 +614,9 @@ static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	}
 	mutex_unlock(&ab->ab_ctl_mutex);
+
+	if (!err && cmd == ABUSE_SET_STATUS && max_part > 0)
+		ioctl_by_bdev(ab->ab_device, BLKRRPART, 0);
 
 	return err;
 }

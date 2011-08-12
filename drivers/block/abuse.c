@@ -616,9 +616,6 @@ static long abctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	}
 	mutex_unlock(&ab->ab_ctl_mutex);
 
-	if (!err && cmd == ABUSE_SET_STATUS && max_part > 0)
-		ioctl_by_bdev(ab->ab_device, BLKRRPART, 0);
-
 	return err;
 }
 

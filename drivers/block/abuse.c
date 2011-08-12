@@ -44,6 +44,7 @@
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <asm/uaccess.h>
+#include <linux/hdreg.h>
 
 #include <linux/abuse.h>
 
@@ -670,10 +671,37 @@ static int ab_release(struct gendisk *disk, fmode_t mode)
 	return 0;
 }
 
-static struct block_device_operations ab_fops = {
+static int ab_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+{
+	unsigned int heads, sectors, cylinders;
+	sector_t capacity;
+
+	/* in 512 byte sectors */
+	capacity = get_capacity(bdev->bd_disk);
+
+	if (capacity >= 0x200000) {
+		heads = 255;
+		sectors = 63;
+		cylinders = sector_div(capacity, heads * sectors);
+	} else {
+		heads = 64;
+		sectors = 32;
+		cylinders = sector_div(capacity, heads * sectors);
+	}
+
+	geo->heads = heads;
+	geo->sectors = sectors;
+	geo->cylinders = cylinders;
+	geo->start = get_start_sect(bdev);
+
+	return 0;
+}
+
+static struct block_device_operations ab_bdev_ops = {
 	.owner =	THIS_MODULE,
 	.open =		ab_open,
 	.release =	ab_release,
+	.getgeo =	ab_getgeo,
 };
 
 static struct file_operations abctl_fops = {
@@ -719,7 +747,7 @@ static struct abuse_device *abuse_alloc(int devi)
 	
 	disk->major		= ABUSE_MAJOR;
 	disk->first_minor	= devi << dev_shift;
-	disk->fops		= &ab_fops;
+	disk->fops		= &ab_bdev_ops;
 	disk->private_data	= ab;
 	disk->queue		= ab->ab_queue;
 	sprintf(disk->disk_name, "abuse%d", devi);

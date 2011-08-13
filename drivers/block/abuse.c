@@ -112,7 +112,7 @@ struct abuse_device *abuse_get_dev(int dev)
 }
 
 /*
- * Add bio to back of pending list
+ * Add the bio to the tail end of the pending list.
  */
 static void abuse_add_bio(struct abuse_device *ab, struct bio *bio)
 {
@@ -211,17 +211,17 @@ static int abuse_make_request(struct request_queue *q, struct bio *bio)
 
 	spin_lock_irqsave(&ab->ab_lock, flags);
 	if (unlikely(rw == WRITE && (ab->ab_flags & ABUSE_FLAGS_READ_ONLY)))
-		goto out;
+		goto Out;
+	if (unlikely(ab->ab_size == 0 || ab->ab_blocksize == 0))
+		goto Out;
 	abuse_add_bio(ab, bio);
 	wake_up(&ab->ab_event);
 	spin_unlock_irqrestore(&ab->ab_lock, flags);
 
 	return 0;
-out:
+Out:
 	ab->ab_errors++;
 	spin_unlock_irqrestore(&ab->ab_lock, flags);
-	dev_err(ab->device, "%s: queue overflow: sector %lu\n", __func__,
-		bio->bi_sector);
 	bio_io_error(bio);
 
 	return 0;
@@ -312,10 +312,9 @@ __abuse_set_status(struct abuse_device *ab, struct block_device *bdev,
 		if (!(ab->ab_flags & ABUSE_FLAGS_RECONNECT))
 			return -EINVAL;
 
-		/*
-		 * Don't allow these to change on a reconnect.
-		 * We do allow changing the max queue size and
-		 * the RO flag.
+		/* Don't allow these to change on a reconnect.  We do
+		 * however allow changing the max queue size and the
+		 * RO flag.
 		 */
 		if (ab->ab_size != info->ab_size ||
 		    ab->ab_blocksize != info->ab_blocksize ||
@@ -411,8 +410,10 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	if (!ab)
 		return -ENODEV;
 
-	if (copy_from_user(&xfr, arg, sizeof (struct abuse_xfr_hdr)))
+	if (copy_from_user(&xfr, arg, sizeof (struct abuse_xfr_hdr))) {
+		dev_err(ab->device, "%s: copy_from_user: EFAULT\n", __func__);
 		return -EFAULT;
+	}
 
 	spin_lock_irqsave(&ab->ab_lock, flags);
 	bio = abuse_find_bio(ab, NULL);
@@ -436,12 +437,16 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 	}
 	spin_unlock_irqrestore(&ab->ab_lock, flags);
 
-	if (copy_to_user(arg, &xfr, sizeof(xfr)))
+	if (copy_to_user(arg, &xfr, sizeof(xfr))) {
+		dev_err(ab->device, "%s: copy_to_user: EFAULT\n", __func__);
 		goto Move_back;
+	}
 
 	if (xfr.ab_transfer_address &&
 	    copy_to_user((void *) xfr.ab_transfer_address, ab->ab_xfer,
 			 xfr.ab_vec_count * sizeof(ab->ab_xfer[0]))) {
+		dev_err(ab->device, "%s: ab_transfer_address copy_to_user: "
+			"EFAULT\n", __func__);
 		goto Move_back;
 	}
 	
@@ -506,8 +511,8 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 		return -EINVAL;
 	}
 
-	/*
-	 * Now handle individual failures that don't affect other I/Os.
+	/* Now handle individual failures that don't affect other
+	 * I/Os.
 	 */
 	if (unlikely(xfr.ab_result == ABUSE_RESULT_MEDIA_FAILURE)) {
 		if (put) {
@@ -538,6 +543,8 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 			write);
 		if (copy_from_user(ab->ab_xfer, (void *)xfr.ab_transfer_address,
 				   bio->bi_vcnt * sizeof(ab->ab_xfer[0]))) {
+			dev_err(ab->device, "%s: copy_from_user: EFAULT\n",
+				__func__);
 			abuse_add_ubio_unlocked(ab, bio);
 			return -EFAULT;
 		}
@@ -557,6 +564,8 @@ abuse_put_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg,
 
 			kunmap(bvec->bv_page);
 			if (ret != 0) {
+				dev_err(ab->device,"%s: copy_*_user: EFAULT\n",
+					__func__);
 				abuse_add_ubio_unlocked(ab, bio);
 				return -EFAULT;
 			}
@@ -626,9 +635,8 @@ static unsigned int abctl_poll(struct file *filp, poll_table *wait)
 
 	poll_wait(filp, &ab->ab_event, wait);
 
-	/*
-	 * The comment in asm-generic/poll.h says of these nonstandard values,
-	 * 'Check them!'.  Thus we use POLLMSG to force the user to check it.
+	/* The user space application should check that POLLMSG was
+	 * set.
 	 */
 	mask = (ab->ab_bio) ? POLLMSG : 0;
 
@@ -710,9 +718,6 @@ static struct file_operations abctl_fops = {
 	.poll =		abctl_poll,
 };
 
-/*
- * And now the modules code and kernel interface.
- */
 static int max_abuse;
 module_param(max_abuse, int, 0);
 MODULE_PARM_DESC(max_abuse, "Maximum number of abuse devices");
@@ -730,17 +735,17 @@ static struct abuse_device *abuse_alloc(int devi)
 
 	ab = kzalloc(sizeof(*ab), GFP_KERNEL);
 	if (!ab)
-		goto out;
+		goto Out;
 
 	ab->ab_queue = blk_alloc_queue(GFP_KERNEL);
 	if (!ab->ab_queue)
-		goto out_free_dev;
+		goto Out_free_dev;
 
 	blk_set_default_limits(&ab->ab_queue->limits);
 
 	disk = ab->ab_disk = alloc_disk(num_minors);
 	if (!disk)
-		goto out_free_queue;
+		goto Out_free_queue;
 	
 	disk->major		= ABUSE_MAJOR;
 	disk->first_minor	= devi << dev_shift;
@@ -751,19 +756,19 @@ static struct abuse_device *abuse_alloc(int devi)
 
 	cdev = ab->ab_cdev = cdev_alloc();
 	if (!cdev)
-		goto out_free_disk;
+		goto Out_free_disk;
 
 	cdev->owner = THIS_MODULE;
 	cdev->ops = &abctl_fops;
 
 	if (cdev_add(ab->ab_cdev, MKDEV(ABUSECTL_MAJOR, devi), 1) != 0)
-		goto out_free_cdev;
+		goto Out_free_cdev;
 	
 	device = device_create(abuse_class, NULL, MKDEV(ABUSECTL_MAJOR, devi),
 			       ab, "abctl%d", devi);
 	if (IS_ERR(device)) {
 		pr_err("%s: device_create:%ld\n", __func__, PTR_ERR(device));
-		goto out_free_cdev;
+		goto Out_free_cdev;
 	}
 	
 	mutex_init(&ab->ab_ctl_mutex);
@@ -774,15 +779,15 @@ static struct abuse_device *abuse_alloc(int devi)
 
 	return ab;
 
-out_free_cdev:
+Out_free_cdev:
 	cdev_del(ab->ab_cdev);
-out_free_disk:
+Out_free_disk:
 	put_disk(ab->ab_disk);
-out_free_queue:
+Out_free_queue:
 	blk_cleanup_queue(ab->ab_queue);
-out_free_dev:
+Out_free_dev:
 	kfree(ab);
-out:
+Out:
 	return NULL;
 }
 
@@ -839,16 +844,17 @@ static int __init abuse_init(void)
 	int devi, nr, err;
 	struct abuse_device *ab, *next;
 
-	/*
-	 * abuse module has a feature to instantiate underlying device
-	 * structure on-demand, provided that there is an access dev node.
+	/* The abuse module has a feature to instantiate underlying
+	 * device structure on-demand, provided that there is an
+	 * access dev node.
 	 *
-	 * (1) if max_abuse is specified, create that many upfront, and this
-	 *     also becomes a hard limit.  Cross it and divorce is likely.
-	 * (2) if max_abuse is not specified, create 8 abuse device on module
-	 *     load, user can further extend abuse device by create dev node
-	 *     themselves and have kernel automatically instantiate actual
-	 *     device on-demand.
+	 * (1) If max_abuse is specified, create that many upfront,
+	 *     and this also becomes a hard limit.
+	 *     
+	 * (2) If max_abuse is not specified, create 8 abuse devices
+	 *     on module load. The user can further create a dev node
+	 *     themselves and have kernel automatically instantiate
+	 *     the actual device on-demand.
 	 */
 
 	dev_shift = 0;
@@ -878,7 +884,7 @@ static int __init abuse_init(void)
 				     "abuse");
 	if (err) {
 		pr_err("%s: register_chrdev_region:%d\n", __func__, err);
-		goto unregister_blk;
+		goto Unregister_blk;
 	}
 	pr_info("abuse: registered chrdev major %d, range %d\n",
 		ABUSECTL_MAJOR, abuse_range);
@@ -887,7 +893,7 @@ static int __init abuse_init(void)
 	if (IS_ERR(abuse_class)) {
 		err = PTR_ERR(abuse_class);
 		pr_err("%s: class_create:%d\n", __func__, err);
-		goto unregister_chr;
+		goto Unregister_chr;
 	}
 
 	err = -ENOMEM;
@@ -895,12 +901,10 @@ static int __init abuse_init(void)
 		ab = abuse_alloc(devi);
 		if (!ab) {
 			pr_err("%s: out of memory\n", __func__);
-			goto free_devices;
+			goto Free_devices;
 		}
 		list_add_tail(&ab->ab_list, &abuse_devices);
 	}
-
-	/* point of no return */
 
 	list_for_each_entry(ab, &abuse_devices, ab_list) {
 		add_disk(ab->ab_disk);
@@ -912,13 +916,13 @@ static int __init abuse_init(void)
 	pr_info("abuse: module loaded\n");
 	return 0;
 
-free_devices:
+Free_devices:
 	list_for_each_entry_safe(ab, next, &abuse_devices, ab_list) {
 		abuse_free(ab);
 	}
-unregister_chr:
+Unregister_chr:
 	unregister_chrdev_region(MKDEV(ABUSECTL_MAJOR, 0), abuse_range);
-unregister_blk:
+Unregister_blk:
 	unregister_blkdev(ABUSE_MAJOR, "abuse");
 	return err;
 }

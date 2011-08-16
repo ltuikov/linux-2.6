@@ -18,7 +18,7 @@
  * Copyright (c) 2009 by Zachary Amsden.  Redistribution of this file is
  * permitted under the GNU General Public License.
  *
- * Copyright Luben Tuikov, 2011
+ * Copyright (C) 2011 Luben Tuikov
  */
 
 #ifdef CONFIG_BLK_DEV_ABUSE_DEBUG

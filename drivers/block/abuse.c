@@ -431,9 +431,6 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 		/* Now put it in the pending-in-userspace list.
 		 */
 		abuse_add_ubio(ab, bio);
-	} else {
-		xfr.ab_transfer_address = 0;
-		xfr.ab_vec_count = 0;
 	}
 	spin_unlock_irqrestore(&ab->ab_lock, flags);
 
@@ -442,7 +439,7 @@ abuse_get_bio(struct abuse_device *ab, struct abuse_xfr_hdr __user *arg)
 		goto Move_back;
 	}
 
-	if (xfr.ab_transfer_address &&
+	if (bio && xfr.ab_transfer_address &&
 	    copy_to_user((void *) xfr.ab_transfer_address, ab->ab_xfer,
 			 xfr.ab_vec_count * sizeof(ab->ab_xfer[0]))) {
 		dev_err(ab->device, "%s: ab_transfer_address copy_to_user: "

@@ -1149,7 +1149,7 @@ static int uasp_ep_conf(struct uasp_tport_info *tpinfo)
 	 * left for commands.
 	 */
 	tpinfo->max_cmds = num_tags - 1;
-	res = uasp_alloc_tags(&tpinfo->tag_data, 1, num_tags, GFP_ATOMIC);
+	res = uasp_alloc_tags(&tpinfo->tag_data, 1, num_tags - 1, GFP_ATOMIC);
 
 	return res;
 }
